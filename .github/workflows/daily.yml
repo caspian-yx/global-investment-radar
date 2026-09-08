@@ -1,0 +1,73 @@
+name: Daily Radar
+
+on:
+  workflow_dispatch:
+    inputs:
+      data_mode:
+        description: Data mode
+        required: true
+        default: live
+        type: choice
+        options:
+          - live
+          - demo
+  schedule:
+    # 22:17 UTC = 06:17 Asia/Shanghai on the following calendar day.
+    # The non-zero minute reduces peak-hour delay risk; GitHub schedules are best effort.
+    - cron: "17 22 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-investment-radar
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_ENV: production
+      DATA_MODE: ${{ inputs.data_mode || 'live' }}
+      BUSINESS_TIMEZONE: Asia/Shanghai
+      LOOKBACK_HOURS: "48"
+      AI_ENABLED: "false"
+      DAILY_LLM_BUDGET: "0"
+      LLM_PROVIDER: disabled
+      EMAIL_MODE: smtp
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
+      REPORT_OUTPUT_DIR: outputs/reports
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: uv sync --extra postgres --locked
+      - name: Show safe effective configuration
+        run: uv run radar doctor
+      - name: Run live no-AI radar and deliver email
+        run: mkdir -p outputs && uv run radar daily --no-ai | tee outputs/run-result.json
+      - name: Upload report and run result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: global-investment-radar-${{ github.run_id }}
+          path: |
+            outputs/reports/**/*.html
+            outputs/run-result.json
+          retention-days: 14
+          if-no-files-found: error
