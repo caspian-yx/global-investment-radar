@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>SEC Press Releases</title>
+    <item>
+      <title>SEC Proposes Rescission of Political Contribution Rule</title>
+      <link>https://www.sec.gov/newsroom/press-releases/2026-85</link>
+      <description>The Securities and Exchange Commission proposed a rescission.</description>
+      <pubDate>Thu, 03 Sep 2026 16:30:00 -0400</pubDate>
+      <dc:creator>U.S. SEC</dc:creator>
+      <guid>06cec215-1a77-4ef5-826d-4a0a23404513</guid>
+    </item>
+  </channel>
+</rss>

@@ -7,7 +7,17 @@ from typing import Any
 import pytest
 
 from radar.config import Settings
-from radar.email import SMTPEmailSender
+from radar.email import FileEmailSender, SMTPEmailSender
+
+
+def test_file_email_sender_writes_an_html_message(tmp_path) -> None:
+    status = FileEmailSender(tmp_path).send(subject="Daily radar", html="<b>Ready</b>")
+
+    message_path = tmp_path / "latest-report.eml"
+    assert status == f"Email fixture written to {message_path}"
+    message = message_path.read_text(encoding="utf-8")
+    assert "Subject: Daily radar" in message
+    assert "<b>Ready</b>" in message
 
 
 def test_smtp_sender_uses_tls_login_and_html(monkeypatch) -> None:

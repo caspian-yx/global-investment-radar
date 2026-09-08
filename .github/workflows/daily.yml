@@ -36,13 +36,6 @@ jobs:
       DAILY_LLM_BUDGET: "0"
       LLM_PROVIDER: disabled
       EMAIL_MODE: smtp
-      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-      EMAIL_TO: ${{ secrets.EMAIL_TO }}
-      SMTP_HOST: ${{ secrets.SMTP_HOST }}
-      SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
-      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
       REPORT_OUTPUT_DIR: outputs/reports
     steps:
       - name: Check out repository
@@ -58,9 +51,25 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --extra postgres --locked
       - name: Show safe effective configuration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
         run: uv run radar doctor
       - name: Run live no-AI radar and deliver email
-        run: mkdir -p outputs && uv run radar daily --no-ai | tee outputs/run-result.json
+        shell: bash
+        env:
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
+        run: |
+          set -o pipefail
+          mkdir -p outputs
+          uv run radar daily --no-ai \
+            2> >(tee outputs/run-diagnostics.log >&2) \
+            | tee outputs/run-result.json
       - name: Upload report and run result
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -69,5 +78,6 @@ jobs:
           path: |
             outputs/reports/**/*.html
             outputs/run-result.json
+            outputs/run-diagnostics.log
           retention-days: 14
           if-no-files-found: error

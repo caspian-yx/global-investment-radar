@@ -32,6 +32,19 @@ class ClaimType(StrEnum):
     INTERPRETATION = "INTERPRETATION"
 
 
+class ProviderStatus(StrEnum):
+    OK = "OK"
+    DEGRADED = "DEGRADED"
+    FAILED = "FAILED"
+    NO_DATA = "NO_DATA"
+
+
+class ReportQualityStatus(StrEnum):
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    INSUFFICIENT = "INSUFFICIENT"
+
+
 class EventType(StrEnum):
     EARNINGS = "earnings"
     GUIDANCE = "guidance"
@@ -129,18 +142,21 @@ class MacroObservation(BaseModel):
 
 class CollectionBatch(BaseModel):
     provider: str
+    status: ProviderStatus = ProviderStatus.OK
     documents: list[SourceDocument] = Field(default_factory=list)
     markets: list[MarketObservation] = Field(default_factory=list)
     macro: list[MacroObservation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    diagnostics: dict[str, int] = Field(default_factory=dict)
     is_demo: bool = False
 
 
 class ProviderRunStatus(BaseModel):
     provider: str
-    status: str
+    status: ProviderStatus
     item_count: int
-    message: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    diagnostics: dict[str, int] = Field(default_factory=dict)
 
 
 class EvidencePack(BaseModel):
@@ -171,12 +187,19 @@ class DeterministicSummary(BaseModel):
     risk_flags: list[str]
 
 
+class ReportQualityAssessment(BaseModel):
+    status: ReportQualityStatus
+    market_coverage: float = Field(ge=0, le=1)
+    reasons: list[str] = Field(default_factory=list)
+
+
 class PipelineResult(BaseModel):
     run_id: str
     report_date: str
     report_path: str
     is_demo: bool
     ai_status: str
+    quality_status: ReportQualityStatus
     documents: int
     events: int
     markets: int

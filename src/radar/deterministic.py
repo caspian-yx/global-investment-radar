@@ -15,6 +15,10 @@ from radar.domain import (
     Evidence,
     MacroObservation,
     MarketObservation,
+    ProviderRunStatus,
+    ProviderStatus,
+    ReportQualityAssessment,
+    ReportQualityStatus,
     SourceDocument,
     SourceTier,
     content_hash,
@@ -230,4 +234,57 @@ def build_deterministic_summary(
         market_leaders=leaders,
         macro_headlines=macro_headlines,
         risk_flags=flags,
+    )
+
+
+def assess_report_quality(
+    *,
+    market_count: int,
+    expected_market_count: int,
+    macro_count: int,
+    document_count: int,
+    event_count: int,
+    provider_statuses: list[ProviderRunStatus],
+) -> ReportQualityAssessment:
+    if expected_market_count > 0:
+        market_coverage = min(1.0, market_count / expected_market_count)
+    else:
+        market_coverage = 1.0 if market_count else 0.0
+
+    has_support = macro_count > 0 or event_count > 0
+    severely_missing = (
+        market_coverage < 0.25
+        and macro_count == 0
+        and document_count == 0
+        and event_count == 0
+    )
+    if severely_missing:
+        return ReportQualityAssessment(
+            status=ReportQualityStatus.INSUFFICIENT,
+            market_coverage=market_coverage,
+            reasons=["Market, macro, and official event data are all severely incomplete."],
+        )
+
+    unhealthy_providers = [
+        status.provider
+        for status in provider_statuses
+        if status.status in {ProviderStatus.DEGRADED, ProviderStatus.FAILED}
+    ]
+    if market_coverage >= 0.7 and has_support and not unhealthy_providers:
+        return ReportQualityAssessment(
+            status=ReportQualityStatus.HEALTHY,
+            market_coverage=market_coverage,
+        )
+
+    reasons: list[str] = []
+    if market_coverage < 0.7:
+        reasons.append(f"Core market coverage is {market_coverage:.2%}.")
+    if not has_support:
+        reasons.append("Neither macro observations nor official events are available.")
+    if unhealthy_providers:
+        reasons.append(f"Provider issues: {', '.join(unhealthy_providers)}.")
+    return ReportQualityAssessment(
+        status=ReportQualityStatus.DEGRADED,
+        market_coverage=market_coverage,
+        reasons=reasons,
     )

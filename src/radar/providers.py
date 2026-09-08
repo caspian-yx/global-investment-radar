@@ -3,9 +3,11 @@ from __future__ import annotations
 import html
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
@@ -15,11 +17,29 @@ from radar.domain import (
     CollectionBatch,
     MacroObservation,
     MarketObservation,
+    ProviderStatus,
     SourceDocument,
     SourceTier,
     content_hash,
     stable_id,
 )
+
+RSS_DIAGNOSTIC_KEYS = (
+    "total_entries",
+    "parsed_entries",
+    "filtered_by_date",
+    "invalid_date",
+    "invalid_link",
+    "duplicate_items",
+)
+
+
+@dataclass
+class RSSParseResult:
+    documents: list[SourceDocument] = field(default_factory=list)
+    diagnostics: dict[str, int] = field(
+        default_factory=lambda: {key: 0 for key in RSS_DIAGNOSTIC_KEYS}
+    )
 
 
 class DataProvider(Protocol):
@@ -163,6 +183,10 @@ class DemoProvider:
             warnings=[
                 "Demo fixture data is synthetic and must not be treated as investment research."
             ],
+            diagnostics={
+                "market_items_expected": len(market_specs),
+                "market_items_collected": len(markets),
+            },
             is_demo=True,
         )
 
@@ -213,10 +237,22 @@ class YahooChartProvider:
                     observations.append(observation)
                 except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
                     warnings.append(f"{asset['symbol']}: {type(exc).__name__}: {exc}")
+        if not observations and self.assets:
+            status = ProviderStatus.FAILED
+        elif len(observations) < len(self.assets):
+            status = ProviderStatus.DEGRADED
+        else:
+            status = ProviderStatus.OK
         return CollectionBatch(
             provider=self.name,
+            status=status,
             markets=observations,
             warnings=warnings,
+            diagnostics={
+                "market_items_expected": len(self.assets),
+                "market_items_collected": len(observations),
+                "market_items_failed": len(self.assets) - len(observations),
+            },
         )
 
     @retry(
@@ -312,7 +348,26 @@ class BLSMacroProvider:
                     provider=self.name,
                 )
             )
-        return CollectionBatch(provider=self.name, macro=observations)
+        expected = len(self.series)
+        if not observations:
+            status = ProviderStatus.NO_DATA
+        elif len(observations) < expected:
+            status = ProviderStatus.DEGRADED
+        else:
+            status = ProviderStatus.OK
+        warnings = []
+        if len(observations) < expected:
+            warnings.append(f"Collected {len(observations)} of {expected} configured BLS series.")
+        return CollectionBatch(
+            provider=self.name,
+            status=status,
+            macro=observations,
+            warnings=warnings,
+            diagnostics={
+                "macro_series_expected": expected,
+                "macro_series_collected": len(observations),
+            },
+        )
 
 
 class OfficialRSSProvider:
@@ -328,6 +383,8 @@ class OfficialRSSProvider:
     def collect(self, now: datetime) -> CollectionBatch:
         documents: list[SourceDocument] = []
         warnings: list[str] = []
+        diagnostics = {key: 0 for key in RSS_DIAGNOSTIC_KEYS}
+        diagnostics.update({"feeds_succeeded": 0, "feeds_failed": 0})
         effective_lookback = self.lookback
         if now.weekday() == 0 and effective_lookback < timedelta(hours=96):
             effective_lookback = timedelta(hours=96)
@@ -337,14 +394,33 @@ class OfficialRSSProvider:
                 try:
                     response = client.get(feed["url"])
                     response.raise_for_status()
-                    documents.extend(
-                        self._parse(response.text, feed, now, effective_lookback)
-                    )
+                    parsed = self._parse(response.text, feed, now, effective_lookback)
+                    documents.extend(parsed.documents)
+                    diagnostics["feeds_succeeded"] += 1
+                    for key in RSS_DIAGNOSTIC_KEYS:
+                        diagnostics[key] += parsed.diagnostics[key]
                 except (httpx.HTTPError, ET.ParseError, ValueError) as exc:
+                    diagnostics["feeds_failed"] += 1
                     warnings.append(f"{feed['publisher']}: {type(exc).__name__}: {exc}")
-        if not documents:
-            warnings.append("No official RSS items found within the lookback window.")
-        return CollectionBatch(provider=self.name, documents=documents, warnings=warnings)
+        if self.feeds and diagnostics["feeds_failed"] == len(self.feeds):
+            status = ProviderStatus.FAILED
+        elif diagnostics["feeds_failed"]:
+            status = ProviderStatus.DEGRADED
+        elif not documents:
+            status = ProviderStatus.NO_DATA
+            warnings.append(
+                "Official feeds parsed successfully; no items were published within the "
+                "lookback window."
+            )
+        else:
+            status = ProviderStatus.OK
+        return CollectionBatch(
+            provider=self.name,
+            status=status,
+            documents=documents,
+            warnings=warnings,
+            diagnostics=diagnostics,
+        )
 
     def _parse(
         self,
@@ -352,19 +428,44 @@ class OfficialRSSProvider:
         feed: dict[str, str],
         now: datetime,
         lookback: timedelta,
-    ) -> list[SourceDocument]:
+    ) -> RSSParseResult:
         root = ET.fromstring(raw_xml.lstrip("\ufeff"))
-        result: list[SourceDocument] = []
-        for item in root.findall(".//item"):
-            title = (item.findtext("title") or "Untitled").strip()
-            url = (item.findtext("link") or "").strip()
-            description = item.findtext("description") or ""
+        result = RSSParseResult()
+        seen_links: set[str] = set()
+        entries = [
+            element
+            for element in root.iter()
+            if self._local_name(element.tag) in {"item", "entry"}
+        ]
+        result.diagnostics["total_entries"] = len(entries)
+        for item in entries:
+            title = (self._child_text(item, "title") or "Untitled").strip()
+            url = self._link(item)
+            description = (
+                self._child_text(item, "description", "summary", "content") or ""
+            )
             clean = re.sub(r"<[^>]+>", " ", html.unescape(description))
             clean = re.sub(r"\s+", " ", clean).strip()
-            published = self._published_at(item, now)
-            if now.astimezone(UTC) - published > lookback:
+            try:
+                published = self._published_at(item)
+            except ValueError:
+                result.diagnostics["invalid_date"] += 1
                 continue
-            result.append(
+            if published > now.astimezone(UTC) + timedelta(minutes=5):
+                result.diagnostics["invalid_date"] += 1
+                continue
+            if not self._valid_link(url):
+                result.diagnostics["invalid_link"] += 1
+                continue
+            result.diagnostics["parsed_entries"] += 1
+            if now.astimezone(UTC) - published > lookback:
+                result.diagnostics["filtered_by_date"] += 1
+                continue
+            if url in seen_links:
+                result.diagnostics["duplicate_items"] += 1
+                continue
+            seen_links.add(url)
+            result.documents.append(
                 make_document(
                     provider=self.name,
                     tier=SourceTier(feed["source_tier"]),
@@ -377,17 +478,42 @@ class OfficialRSSProvider:
             )
         return result
 
-    def _published_at(self, item: ET.Element, fallback: datetime) -> datetime:
-        raw = item.findtext("pubDate") or item.findtext("{http://purl.org/dc/elements/1.1/}date")
+    def _published_at(self, item: ET.Element) -> datetime:
+        raw = self._child_text(item, "pubDate", "date", "updated", "published")
         if not raw:
-            return fallback.astimezone(UTC)
+            raise ValueError("missing publication date")
         try:
             parsed = parsedate_to_datetime(raw)
         except (TypeError, ValueError):
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError("invalid publication date") from exc
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
+
+    def _child_text(self, item: ET.Element, *names: str) -> str | None:
+        for child in list(item):
+            if self._local_name(child.tag) in names:
+                text = "".join(child.itertext()).strip()
+                if text:
+                    return text
+        return None
+
+    def _link(self, item: ET.Element) -> str:
+        for child in list(item):
+            if self._local_name(child.tag) != "link":
+                continue
+            return (child.text or child.attrib.get("href") or "").strip()
+        return ""
+
+    def _valid_link(self, url: str) -> bool:
+        parts = urlsplit(url)
+        return parts.scheme in {"http", "https"} and bool(parts.netloc)
+
+    def _local_name(self, tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
 
 
 def build_providers(settings: Settings, universe: dict[str, Any]) -> list[DataProvider]:
