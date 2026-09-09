@@ -27,6 +27,7 @@ from radar.config import PROJECT_ROOT
 from radar.deterministic import build_macro_event
 from radar.domain import (
     Claim,
+    DriverCandidate,
     Event,
     Evidence,
     MacroObservation,
@@ -37,6 +38,7 @@ from radar.domain import (
 
 metadata = MetaData()
 EVIDENCE_PROVENANCE_MIGRATION = "001_c1_evidence_provenance"
+DRIVER_CANDIDATE_MIGRATION = "002_c2_1_driver_candidates"
 
 runs = Table(
     "runs",
@@ -101,6 +103,22 @@ events_table = Table(
     Column("is_demo", Boolean, nullable=False, default=False),
 )
 
+driver_candidates_table = Table(
+    "driver_candidates",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("run_id", String(36), nullable=False, index=True),
+    Column("target_event_id", String(36), nullable=False),
+    Column("candidate_event_id", String(36), nullable=False),
+    Column("interpretation_claim_id", String(36), nullable=False),
+    Column("confidence", String(16), nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ix_driver_candidates_target_event_id",
+    driver_candidates_table.c.target_event_id,
+)
+
 market_table = Table(
     "market_observations",
     metadata,
@@ -152,6 +170,116 @@ class RadarStore:
     def initialize(self) -> None:
         metadata.create_all(self.engine)
         self._migrate_phase_b_to_c1()
+        self._migrate_c1_to_c2_1()
+
+    def _migrate_c1_to_c2_1(self) -> None:
+        """Apply and validate the additive C1 -> C2.1 DriverCandidate migration."""
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(80) PRIMARY KEY,
+                    applied_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+            columns = {
+                column["name"]
+                for column in inspect(connection).get_columns("driver_candidates")
+            }
+            required = {
+                "id",
+                "run_id",
+                "target_event_id",
+                "candidate_event_id",
+                "interpretation_claim_id",
+                "confidence",
+                "payload_json",
+            }
+            if not required <= columns:
+                missing = ", ".join(sorted(required - columns))
+                raise RuntimeError(
+                    f"DriverCandidate migration is incomplete: missing {missing}"
+                )
+            connection.exec_driver_sql(
+                """
+                CREATE INDEX IF NOT EXISTS ix_driver_candidates_target_event_id
+                ON driver_candidates (target_event_id)
+                """
+            )
+            self._validate_driver_candidate_schema(connection)
+            applied = connection.execute(
+                text("SELECT version FROM schema_migrations WHERE version = :version"),
+                {"version": DRIVER_CANDIDATE_MIGRATION},
+            ).first()
+            if applied is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO schema_migrations (version, applied_at) "
+                        "VALUES (:version, :applied_at)"
+                    ),
+                    {
+                        "version": DRIVER_CANDIDATE_MIGRATION,
+                        "applied_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+
+    def _validate_driver_candidate_schema(self, connection: Connection) -> None:
+        inspector = inspect(connection)
+        columns_by_name = {
+            column["name"]: column
+            for column in inspector.get_columns("driver_candidates")
+        }
+        columns = set(columns_by_name)
+        required = {
+            "id",
+            "run_id",
+            "target_event_id",
+            "candidate_event_id",
+            "interpretation_claim_id",
+            "confidence",
+            "payload_json",
+        }
+        if not required <= columns:
+            missing = ", ".join(sorted(required - columns))
+            raise RuntimeError(
+                f"DriverCandidate migration is incomplete: missing {missing}"
+            )
+        for name in required:
+            column = columns_by_name[name]
+            if not isinstance(column["type"], String):
+                raise RuntimeError(
+                    "DriverCandidate migration is incomplete: "
+                    f"invalid type for {name}"
+                )
+            if column["nullable"]:
+                raise RuntimeError(
+                    "DriverCandidate migration is incomplete: "
+                    f"{name} must be NOT NULL"
+                )
+        primary_key = inspector.get_pk_constraint("driver_candidates")["constrained_columns"]
+        if primary_key != ["id"]:
+            raise RuntimeError("DriverCandidate migration is incomplete: invalid primary key")
+        indexes = inspector.get_indexes("driver_candidates")
+        if not any(
+            index["column_names"] == ["target_event_id"] for index in indexes
+        ):
+            raise RuntimeError("DriverCandidate migration is incomplete: index missing")
+        invalid_rows = connection.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM driver_candidates
+                WHERE id IS NULL OR TRIM(id) = ''
+                   OR target_event_id IS NULL OR TRIM(target_event_id) = ''
+                   OR candidate_event_id IS NULL OR TRIM(candidate_event_id) = ''
+                   OR interpretation_claim_id IS NULL OR TRIM(interpretation_claim_id) = ''
+                   OR confidence NOT IN ('LOW', 'MEDIUM', 'HIGH')
+                   OR payload_json IS NULL OR TRIM(payload_json) = ''
+                """
+            )
+        ).scalar_one()
+        if invalid_rows:
+            raise RuntimeError("DriverCandidate migration is incomplete: invalid rows")
 
     def _migrate_phase_b_to_c1(self) -> None:
         """Apply the single versioned Phase B -> C1 provenance migration."""
@@ -367,6 +495,35 @@ class RadarStore:
                 self._event_values(run_id, item),
             )
 
+    def save_driver_candidates(
+        self, run_id: str, items: Iterable[DriverCandidate]
+    ) -> None:
+        for item in items:
+            self._upsert(
+                driver_candidates_table,
+                item.id,
+                {
+                    "id": item.id,
+                    "run_id": run_id,
+                    "target_event_id": item.target_event_id,
+                    "candidate_event_id": item.candidate_event_id,
+                    "interpretation_claim_id": item.interpretation_claim_id,
+                    "confidence": item.confidence.value,
+                    "payload_json": item.model_dump_json(),
+                },
+            )
+
+    def load_driver_candidates_for_target(
+        self, target_event_id: str
+    ) -> list[DriverCandidate]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(driver_candidates_table.c.payload_json)
+                .where(driver_candidates_table.c.target_event_id == target_event_id)
+                .order_by(driver_candidates_table.c.id)
+            ).scalars()
+            return [DriverCandidate.model_validate_json(payload) for payload in rows]
+
     def save_markets(self, run_id: str, items: Iterable[MarketObservation]) -> None:
         for item in items:
             self._upsert(
@@ -434,6 +591,33 @@ class RadarStore:
                 claims.append(claim)
                 evidence_items.append(evidence)
         return events, claims, evidence_items
+
+    def load_canonical_macro_observations(
+        self, items: Iterable[MacroObservation]
+    ) -> list[MacroObservation]:
+        """Load the persisted first-seen payload for each requested series/period."""
+        keys = sorted({(item.series_id, item.period) for item in items})
+        result: list[MacroObservation] = []
+        with self.engine.connect() as connection:
+            for series_id, period in keys:
+                payloads = connection.execute(
+                    select(macro_table.c.payload_json).where(
+                        macro_table.c.series_id == series_id,
+                        macro_table.c.period == period,
+                    )
+                ).scalars()
+                observations = [
+                    MacroObservation.model_validate_json(payload)
+                    for payload in payloads
+                ]
+                if not observations:
+                    raise RuntimeError(
+                        "Persisted macro observation is missing after atomic save"
+                    )
+                result.append(
+                    min(observations, key=lambda item: (item.observed_at, item.id))
+                )
+        return result
 
     def _save_macro_event_bundle(
         self,

@@ -25,6 +25,7 @@ from radar.pipeline import run_daily
 from radar.providers import DemoProvider, make_document
 from radar.storage import (
     RadarStore,
+    driver_candidates_table,
     events_table,
     evidence_table,
     reports_table,
@@ -96,6 +97,7 @@ def test_no_ai_demo_pipeline_generates_html(tmp_path, monkeypatch) -> None:
     assert "Data Coverage" in html
     assert "Missing Data" in html
     assert "Freshness" in html
+    assert "Radar macro backdrop: U.S. 10Y Treasury Yield" not in html
     assert transitions == ["completed"]
 
 
@@ -278,6 +280,13 @@ def test_no_official_items_does_not_make_supported_report_insufficient(
     assert result.market_events == 1
     assert result.official_events == 0
     assert result.macro_events == 0
+    assert result.driver_candidates == 0
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
+        encoding="utf-8"
+    )
+    assert "No evidence-backed driver identified." in html
+    assert "Macro backdrop" in html
+    assert "Cross-asset context" not in html
 
 
 def test_insufficient_data_generates_diagnostic_report_and_exits_nonzero(
@@ -758,3 +767,249 @@ def test_llm_receives_isolated_copies_of_deterministic_artifacts(
     assert all(row.id != "mutated-event" and row.event_key != "mutated-key" for row in event_rows)
     assert all(json.loads(row.payload_json)["id"] == row.id for row in event_rows)
     assert "mutated-source" not in set(evidence_source_ids)
+
+
+def test_pipeline_persists_and_renders_evidence_backed_driver(tmp_path, monkeypatch) -> None:
+    now = datetime(2026, 9, 9, 20, tzinfo=UTC)
+    source = make_document(
+        provider="official-rss",
+        tier=SourceTier.A,
+        publisher="Federal Reserve",
+        url="https://example.com/rate-decision",
+        title="Federal Reserve announces interest rate decision",
+        content="The Federal Reserve announced a federal funds rate decision.",
+        published_at=datetime(2026, 9, 8, 20, tzinfo=UTC),
+    )
+    market = MarketObservation(
+        id=stable_id("market", "driver|^GSPC|2026-09-09"),
+        symbol="^GSPC",
+        name="S&P 500",
+        region="US",
+        observed_at=now,
+        close=98,
+        previous_close=100,
+        change_pct=-2,
+        currency="USD",
+        provider="test-market",
+    )
+    macro = MacroObservation(
+        id=stable_id("macro", "driver|CPI|2026-08"),
+        series_id="CUUR0000SA0",
+        name="CPI",
+        period="2026-08",
+        observed_at=now,
+        value=318.2,
+        previous_value=317.5,
+        change=0.7,
+        change_label="vs previous month",
+        unit="index",
+        provider="bls-public-api",
+    )
+    batch = CollectionBatch(
+        provider="driver-fixture",
+        documents=[source],
+        markets=[market],
+        macro=[macro],
+        diagnostics={"market_items_expected": 1, "market_items_collected": 1},
+    )
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(batch)],
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="live",
+        database_url=f"sqlite:///{(tmp_path / 'driver.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=False,
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=now)
+
+    assert result.driver_candidates == 1
+    store = RadarStore(settings.database_url)
+    assert store.table_count(driver_candidates_table) == 1
+    with store.engine.connect() as connection:
+        target_event_id = connection.execute(
+            select(events_table.c.id).where(events_table.c.event_type == "market_move")
+        ).scalar_one()
+    loaded = store.load_driver_candidates_for_target(target_event_id)
+    assert len(loaded) == 1
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Possible drivers" in html
+    assert "plausible candidate" in html
+    assert "MEDIUM" in html
+    assert "Prior" in html
+    assert "Strong Topic" in html
+    assert 'href="https://example.com/rate-decision"' in html
+    assert 'href="test-market"' not in html
+    assert "Why it happened" not in html
+
+
+def test_c2_1_failure_is_fatal_and_marks_run_failed(tmp_path, monkeypatch) -> None:
+    transitions = track_run_transitions(monkeypatch)
+    monkeypatch.setattr(
+        "radar.pipeline.build_driver_candidates",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("C2.1 failed")),
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="demo",
+        database_url=f"sqlite:///{(tmp_path / 'c2-failure.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=False,
+    )
+
+    with pytest.raises(RuntimeError, match="C2.1 failed"):
+        run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+
+    assert transitions == ["failed"]
+
+
+def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatch) -> None:
+    now = datetime(2026, 9, 9, 20, tzinfo=UTC)
+    prior_a = make_document(
+        provider="official-rss",
+        tier=SourceTier.A,
+        publisher="Federal Reserve",
+        url="https://example.com/fed/rate",
+        title="Federal Reserve announces interest rate decision for S&P 500 context",
+        content="The Federal Reserve announced a federal funds rate decision.",
+        published_at=now.replace(day=8),
+    )
+    prior_b = make_document(
+        provider="official-rss",
+        tier=SourceTier.B,
+        publisher="Independent Newswire",
+        url="https://example.net/wire/rate",
+        title="Federal Reserve announces interest rate decision for S&P 500 context",
+        content="An independent report covered the federal funds rate decision.",
+        published_at=now.replace(day=8, hour=21),
+    )
+    ambiguous = make_document(
+        provider="official-rss",
+        tier=SourceTier.A,
+        publisher="Statistics Office",
+        url="https://example.org/cpi",
+        title="Consumer price index shows inflation pressures & context",
+        content="The consumer price index showed inflation pressures.",
+        published_at=now.replace(hour=18),
+    )
+    market = MarketObservation(
+        id=stable_id("market", "multi-driver|^GSPC|2026-09-09"),
+        symbol="^GSPC",
+        name="S&P 500",
+        region="US",
+        observed_at=now,
+        close=98,
+        previous_close=100,
+        change_pct=-2,
+        currency="USD",
+        provider="test-market",
+    )
+    macro = MacroObservation(
+        id=stable_id("macro", "multi-driver|CPI|2026-08"),
+        series_id="CUUR0000SA0",
+        name="CPI",
+        period="2026-08",
+        observed_at=now,
+        value=318.2,
+        previous_value=317.5,
+        change=0.7,
+        change_label="vs previous month",
+        unit="index",
+        provider="bls-public-api",
+    )
+    batch = CollectionBatch(
+        provider="multi-driver-fixture",
+        documents=[prior_a, prior_b, ambiguous],
+        markets=[market],
+        macro=[macro],
+        diagnostics={"market_items_expected": 1, "market_items_collected": 1},
+    )
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(batch)],
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="live",
+        database_url=f"sqlite:///{(tmp_path / 'multi-driver.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=False,
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=now)
+
+    assert result.driver_candidates == 2
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
+        encoding="utf-8"
+    )
+    assert html.count("plausible candidate") == 2
+    assert "Confidence HIGH" in html
+    assert "Confidence LOW" in html
+    assert "Same Window Ambiguous" in html
+    assert "Macro backdrop" in html
+    assert "inflation pressures &amp; context" in html
+    assert "inflation pressures & context" not in html
+
+
+def test_report_renders_context_only_for_vix_and_equity_weakness(
+    tmp_path, monkeypatch
+) -> None:
+    now = datetime(2026, 9, 9, 20, tzinfo=UTC)
+    specifications = [
+        ("^GSPC", "S&P 500", -2.0),
+        ("^NDX", "Nasdaq 100", -2.5),
+        ("^DJI", "Dow Jones", -2.0),
+        ("^RUT", "Russell 2000", -2.5),
+        ("^VIX", "VIX", 8.0),
+    ]
+    markets = [
+        MarketObservation(
+            id=stable_id("market", f"context|{symbol}|2026-09-09"),
+            symbol=symbol,
+            name=name,
+            region="US",
+            observed_at=now,
+            close=100 + change_pct,
+            previous_close=100,
+            change_pct=change_pct,
+            currency="USD",
+            provider="test-market",
+        )
+        for symbol, name, change_pct in specifications
+    ]
+    batch = CollectionBatch(
+        provider="context-fixture",
+        markets=markets,
+        diagnostics={"market_items_expected": 5, "market_items_collected": 5},
+    )
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(batch)],
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="live",
+        database_url=f"sqlite:///{(tmp_path / 'context.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=False,
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=now)
+
+    assert result.driver_candidates == 0
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Cross-asset context" in html
+    assert "US equity breadth context" in html
+    assert "US equity weakness and a rising VIX" in html
+    assert "Macro backdrop" not in html
+    assert "No evidence-backed driver identified." in html

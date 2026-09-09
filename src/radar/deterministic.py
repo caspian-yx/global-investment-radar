@@ -27,6 +27,10 @@ from radar.domain import (
     content_hash,
     stable_id,
 )
+from radar.explanation import (
+    build_macro_observation_evidence,
+    build_market_observation_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -244,36 +248,13 @@ def extract_market_events(
 
         observed_at = observation.observed_at.astimezone(UTC)
         event_key = f"market:{observation.symbol}:{observed_at.isoformat()}"
-        excerpt = (
-            f"{observation.name} ({observation.symbol}) moved "
-            f"{observation.change_pct:+.2f}% from {observation.previous_close:g} to "
-            f"{observation.close:g} at {observed_at.isoformat()} "
-            f"according to {observation.provider}."
-        )
-        evidence_id = stable_id("evidence", f"{observation.id}|{content_hash(excerpt)}")
+        market_evidence = build_market_observation_evidence(observation)
+        evidence_id = market_evidence.id
+        excerpt = market_evidence.excerpt
         claim_id = stable_id("claim", event_key)
         direction = "rose" if observation.change_pct >= 0 else "fell"
         title = f"{observation.name} {direction} {abs(observation.change_pct):.2f}%"
-        evidence_items.append(
-            Evidence(
-                id=evidence_id,
-                source_kind=SourceKind.MARKET_OBSERVATION,
-                source_id=observation.id,
-                locator={
-                    "type": "market_bar",
-                    "asset": observation.name,
-                    "symbol": observation.symbol,
-                    "previous_close": observation.previous_close,
-                    "latest_close": observation.close,
-                    "change_pct": observation.change_pct,
-                    "observed_at": observed_at.isoformat(),
-                    "provider": observation.provider,
-                },
-                excerpt=excerpt,
-                checksum=content_hash(excerpt),
-                quality_score=0.75,
-            )
-        )
+        evidence_items.append(market_evidence)
         claims.append(
             Claim(
                 id=claim_id,
@@ -319,51 +300,10 @@ def build_macro_event(
     """Build a factual event for a period first observed by Radar."""
     event_key = f"macro:{observation.series_id}:{observation.period}"
     observed_at = observation.observed_at.astimezone(UTC)
-    value_text = (
-        f"{observation.value:g}%"
-        if observation.unit == "%"
-        else f"{observation.value:g} {observation.unit}"
-    )
-    change_text = ""
-    change_unit: str | None = None
-    if observation.change is not None:
-        if observation.unit == "%":
-            change_unit = "percentage points"
-        elif observation.unit == "index":
-            change_unit = "index points"
-        else:
-            change_unit = observation.unit
-        label = observation.change_label or "vs previous observation"
-        change_text = f"; change {observation.change:+g} {change_unit} {label}"
-    excerpt = (
-        f"{observation.name} ({observation.series_id}) period {observation.period}: "
-        f"{value_text}{change_text}; first observed by Radar at {observed_at.isoformat()} "
-        f"from {observation.provider}."
-    )
-    evidence_id = stable_id("evidence", f"{observation.id}|{content_hash(excerpt)}")
+    evidence = build_macro_observation_evidence(observation)
+    evidence_id = evidence.id
+    excerpt = evidence.excerpt
     claim_id = stable_id("claim", event_key)
-    evidence = Evidence(
-        id=evidence_id,
-        source_kind=SourceKind.MACRO_OBSERVATION,
-        source_id=observation.id,
-        locator={
-            "type": "macro_period",
-            "series_id": observation.series_id,
-            "series": observation.name,
-            "period": observation.period,
-            "value": observation.value,
-            "unit": observation.unit,
-            "previous_value": observation.previous_value,
-            "change": observation.change,
-            "change_unit": change_unit,
-            "change_label": observation.change_label,
-            "radar_observed_at": observed_at.isoformat(),
-            "provider": observation.provider,
-        },
-        excerpt=excerpt,
-        checksum=content_hash(excerpt),
-        quality_score=1.0 if observation.provider == "bls-public-api" else 0.8,
-    )
     claim = Claim(
         id=claim_id,
         claim_type=ClaimType.DERIVED,

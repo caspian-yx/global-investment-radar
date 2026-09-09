@@ -130,6 +130,49 @@
                 {% endif %}
               {% endfor %}
             </div>
+            {% if event.event_type.value in ['market_move', 'risk'] %}
+            <div style="margin-top:12px;padding:12px;background:#f5f8fb;font-size:13px;line-height:1.55;color:#33485e;">
+              <strong>Possible drivers</strong>
+              {% set candidates = driver_candidates.get(event.id, []) %}
+              {% for candidate in candidates %}
+              <div style="margin-top:8px;">
+                {{ claims[candidate.interpretation_claim_id].text }}
+                <div style="margin-top:3px;color:#667583;">
+                  Confidence {{ candidate.confidence.value }} ·
+                  {{ candidate.temporal_relation.value|replace('_', ' ')|title }} ·
+                  {{ candidate.relevance_relation.value|replace('_', ' ')|title }}
+                </div>
+                <div style="margin-top:3px;">
+                  Provenance:
+                  {% for evidence_id in candidate.candidate_evidence_ids %}
+                    {% set candidate_evidence = evidence[evidence_id] %}
+                    {% if candidate_evidence.source_kind.value == 'DOCUMENT' %}
+                      {% set candidate_source = sources[candidate_evidence.source_id] %}
+                      <a href="{{ candidate_source.canonical_url }}" style="color:#245d93;text-decoration:underline;">{{ candidate_source.publisher }}</a>{% if not loop.last %} · {% endif %}
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              </div>
+              {% endfor %}
+              {% if not candidates %}
+              <div style="margin-top:6px;color:#667583;">No evidence-backed driver identified.</div>
+              {% endif %}
+            </div>
+            {% set context_items = cross_asset_context.get(event.id, []) %}
+            {% if context_items %}
+            <div style="margin-top:10px;font-size:13px;line-height:1.55;color:#4e5e6d;">
+              <strong>Cross-asset context</strong>
+              {% for item in context_items %}<div style="margin-top:5px;">{{ item.text }}</div>{% endfor %}
+            </div>
+            {% endif %}
+            {% set backdrop_items = macro_backdrop.get(event.id, []) %}
+            {% if backdrop_items %}
+            <div style="margin-top:10px;font-size:13px;line-height:1.55;color:#4e5e6d;">
+              <strong>Macro backdrop</strong>
+              {% for item in backdrop_items %}<div style="margin-top:5px;">{{ item.text }}</div>{% endfor %}
+            </div>
+            {% endif %}
+            {% endif %}
             {% set analysis = analyses.get(event.id) %}
             {% if analysis and analysis.why_it_matters %}
             <div style="margin-top:12px;padding:12px;background:#f5f8fb;font-size:14px;line-height:1.55;">

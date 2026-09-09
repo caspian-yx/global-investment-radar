@@ -38,6 +38,44 @@ class SourceKind(StrEnum):
     MACRO_OBSERVATION = "MACRO_OBSERVATION"
 
 
+class SessionKind(StrEnum):
+    EXCHANGE = "EXCHANGE"
+    NEAR_24_HOUR = "NEAR_24_HOUR"
+    CONTINUOUS = "CONTINUOUS"
+
+
+class Topic(StrEnum):
+    RATES = "RATES"
+    INFLATION = "INFLATION"
+    EMPLOYMENT = "EMPLOYMENT"
+    REGULATION = "REGULATION"
+    TECHNOLOGY = "TECHNOLOGY"
+    ENERGY = "ENERGY"
+    CHINA = "CHINA"
+    US = "US"
+
+
+class DriverTemporalRelation(StrEnum):
+    PRIOR = "PRIOR"
+    SAME_WINDOW_AMBIGUOUS = "SAME_WINDOW_AMBIGUOUS"
+    POST_EVENT = "POST_EVENT"
+    STALE = "STALE"
+    UNKNOWN = "UNKNOWN"
+
+
+class DriverRelevance(StrEnum):
+    EXACT_ENTITY = "EXACT_ENTITY"
+    STRONG_TOPIC = "STRONG_TOPIC"
+    WEAK = "WEAK"
+    NONE = "NONE"
+
+
+class DriverConfidence(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
 class AssetClass(StrEnum):
     EQUITY_INDEX = "EQUITY_INDEX"
     EQUITY_ETF_PROXY = "EQUITY_ETF_PROXY"
@@ -140,6 +178,38 @@ class Event(BaseModel):
     is_demo: bool = False
 
 
+class DriverCandidate(BaseModel):
+    id: str = Field(min_length=1, pattern=r".*\S.*")
+    target_event_id: str = Field(min_length=1, pattern=r".*\S.*")
+    candidate_event_id: str = Field(min_length=1, pattern=r".*\S.*")
+    interpretation_claim_id: str = Field(min_length=1, pattern=r".*\S.*")
+    evidence_ids: list[str] = Field(min_length=1)
+    target_evidence_ids: list[str] = Field(min_length=1)
+    candidate_evidence_ids: list[str] = Field(min_length=1)
+    temporal_relation: DriverTemporalRelation
+    relevance_relation: DriverRelevance
+    confidence: DriverConfidence
+    confidence_components: dict[str, str]
+    confidence_reasons: list[str] = Field(min_length=1)
+    generator: str = Field(min_length=1, pattern=r".*\S.*")
+    rule_version: str = Field(min_length=1, pattern=r".*\S.*")
+    as_of: datetime
+
+    @model_validator(mode="after")
+    def validate_relationship_shape(self) -> DriverCandidate:
+        if self.target_event_id == self.candidate_event_id:
+            raise ValueError("target and candidate Events must differ")
+        target_ids = sorted(set(self.target_evidence_ids))
+        candidate_ids = sorted(set(self.candidate_evidence_ids))
+        if target_ids != self.target_evidence_ids:
+            raise ValueError("target Evidence IDs must be unique and sorted")
+        if candidate_ids != self.candidate_evidence_ids:
+            raise ValueError("candidate Evidence IDs must be unique and sorted")
+        if sorted(set([*target_ids, *candidate_ids])) != self.evidence_ids:
+            raise ValueError("supporting Evidence IDs must be the canonical union")
+        return self
+
+
 class MarketObservation(BaseModel):
     id: str
     symbol: str
@@ -234,6 +304,7 @@ class PipelineResult(BaseModel):
     official_events: int
     market_events: int
     macro_events: int
+    driver_candidates: int
     markets: int
     macro: int
     email_status: str

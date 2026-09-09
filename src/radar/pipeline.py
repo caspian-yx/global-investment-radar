@@ -25,6 +25,14 @@ from radar.domain import (
     stable_id,
 )
 from radar.email import build_email_sender
+from radar.explanation import (
+    build_cross_asset_context,
+    build_driver_candidates,
+    build_macro_backdrop,
+    build_observation_evidence,
+    unique_by_id,
+    validate_driver_candidate_bundle,
+)
 from radar.llm import LLMProvider, build_llm_provider
 from radar.providers import build_providers
 from radar.report import HtmlReportRenderer, report_context
@@ -165,17 +173,55 @@ def _run_started_pipeline(
     macro_events, macro_claims, macro_evidence = (
         store.save_macro_with_first_observed_events(run_id, macro, started_at)
     )
+    canonical_macro = store.load_canonical_macro_observations(macro)
     events = sorted(
         [*official_events, *market_events, *macro_events],
         key=lambda item: item.importance_score,
         reverse=True,
     )
-    claims = [*official_claims, *market_claims, *macro_claims]
-    evidence = [*official_evidence, *market_evidence, *macro_evidence]
+    c1_claims = [*official_claims, *market_claims, *macro_claims]
+    c1_evidence = [*official_evidence, *market_evidence, *macro_evidence]
+    observation_evidence = build_observation_evidence(markets, [])
+    cross_asset_claims, cross_asset_evidence, cross_asset_by_target = (
+        build_cross_asset_context(markets, market_events, universe["assets"], started_at)
+    )
+    macro_backdrop_claims, macro_backdrop_evidence, macro_backdrop_by_target = (
+        build_macro_backdrop(canonical_macro, market_events, started_at)
+    )
+    evidence = unique_by_id(
+        [
+            *c1_evidence,
+            *observation_evidence,
+            *cross_asset_evidence,
+            *macro_backdrop_evidence,
+        ]
+    )
+    driver_candidates, driver_claims = build_driver_candidates(
+        target_events=market_events,
+        candidate_events=official_events,
+        evidence=evidence,
+        documents=documents,
+        assets=universe["assets"],
+        as_of=started_at,
+    )
+    claims = unique_by_id(
+        [*c1_claims, *cross_asset_claims, *macro_backdrop_claims, *driver_claims]
+    )
+    for candidate in driver_candidates:
+        validate_driver_candidate_bundle(
+            candidate,
+            events=events,
+            claims=claims,
+            evidence=evidence,
+            markets=markets,
+            documents=documents,
+            assets=universe["assets"],
+        )
     summary = build_deterministic_summary(markets, macro, events)
     logger.info(
         "Collection complete documents=%d markets=%d macro=%d clusters=%d "
-        "official_events=%d market_events=%d macro_events=%d total_events=%d",
+        "official_events=%d market_events=%d macro_events=%d total_events=%d "
+        "driver_candidates=%d",
         len(documents),
         len(markets),
         len(macro),
@@ -184,6 +230,7 @@ def _run_started_pipeline(
         len(market_events),
         len(macro_events),
         len(events),
+        len(driver_candidates),
     )
 
     claim_map = {item.id: item for item in claims}
@@ -224,6 +271,7 @@ def _run_started_pipeline(
     store.save_evidence(run_id, evidence)
     store.save_claims(run_id, claims)
     store.save_events(run_id, events)
+    store.save_driver_candidates(run_id, driver_candidates)
     store.save_markets(run_id, markets)
 
     expected_market_count = sum(
@@ -278,6 +326,20 @@ def _run_started_pipeline(
         evidence=evidence_map,
         sources=source_map,
         analyses={item.event_id: item for item in analyses},
+        driver_candidates={
+            event.id: [
+                item for item in driver_candidates if item.target_event_id == event.id
+            ]
+            for event in market_events
+        },
+        cross_asset_context={
+            event.id: [claim_map[item_id] for item_id in cross_asset_by_target[event.id]]
+            for event in market_events
+        },
+        macro_backdrop={
+            event.id: [claim_map[item_id] for item_id in macro_backdrop_by_target[event.id]]
+            for event in market_events
+        },
         summary=summary,
         coverage={
             "documents": len(documents),
@@ -285,6 +347,7 @@ def _run_started_pipeline(
             "official_events": len(official_events),
             "market_events": len(market_events),
             "macro_events": len(macro_events),
+            "driver_candidates": len(driver_candidates),
             "markets": len(markets),
             "macro": len(macro),
         },
@@ -345,6 +408,7 @@ def _run_started_pipeline(
         official_events=len(official_events),
         market_events=len(market_events),
         macro_events=len(macro_events),
+        driver_candidates=len(driver_candidates),
         markets=len(markets),
         macro=len(macro),
         email_status=email_status,
@@ -357,6 +421,7 @@ def _run_started_pipeline(
         "official_events": len(official_events),
         "market_events": len(market_events),
         "macro_events": len(macro_events),
+        "driver_candidates": len(driver_candidates),
         "markets": len(markets),
         "macro": len(macro),
         "quality_status": quality.status.value,
