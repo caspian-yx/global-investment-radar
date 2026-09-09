@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 ID_NAMESPACE = uuid.UUID("e482538d-22c4-4a71-9713-06e7a4193378")
 
@@ -32,6 +32,20 @@ class ClaimType(StrEnum):
     INTERPRETATION = "INTERPRETATION"
 
 
+class SourceKind(StrEnum):
+    DOCUMENT = "DOCUMENT"
+    MARKET_OBSERVATION = "MARKET_OBSERVATION"
+    MACRO_OBSERVATION = "MACRO_OBSERVATION"
+
+
+class AssetClass(StrEnum):
+    EQUITY_INDEX = "EQUITY_INDEX"
+    EQUITY_ETF_PROXY = "EQUITY_ETF_PROXY"
+    FX = "FX"
+    COMMODITY = "COMMODITY"
+    CRYPTO = "CRYPTO"
+
+
 class ProviderStatus(StrEnum):
     OK = "OK"
     DEGRADED = "DEGRADED"
@@ -46,6 +60,7 @@ class ReportQualityStatus(StrEnum):
 
 
 class EventType(StrEnum):
+    MARKET_MOVE = "market_move"
     EARNINGS = "earnings"
     GUIDANCE = "guidance"
     MACRO = "macro_release"
@@ -75,12 +90,26 @@ class SourceDocument(BaseModel):
 
 class Evidence(BaseModel):
     id: str
-    source_document_id: str
+    source_kind: SourceKind
+    source_id: str = Field(min_length=1, pattern=r".*\S.*")
+    source_document_id: str | None = None
     locator: dict[str, Any]
     excerpt: str
     checksum: str
     quality_score: float = Field(ge=0, le=1)
     extraction_method: str = "deterministic"
+
+    @model_validator(mode="after")
+    def validate_legacy_document_reference(self) -> Evidence:
+        if self.source_kind is SourceKind.DOCUMENT:
+            if (
+                self.source_document_id is not None
+                and self.source_document_id != self.source_id
+            ):
+                raise ValueError("document provenance IDs must agree")
+        elif self.source_document_id is not None:
+            raise ValueError("non-document evidence cannot carry source_document_id")
+        return self
 
 
 class Claim(BaseModel):
@@ -202,6 +231,9 @@ class PipelineResult(BaseModel):
     quality_status: ReportQualityStatus
     documents: int
     events: int
+    official_events: int
+    market_events: int
+    macro_events: int
     markets: int
     macro: int
     email_status: str

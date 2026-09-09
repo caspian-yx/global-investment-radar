@@ -8,9 +8,17 @@ from radar.deterministic import (
     assess_report_quality,
     canonicalize_url,
     cluster_documents,
+    extract_events,
     title_similarity,
 )
-from radar.domain import ProviderRunStatus, ProviderStatus, ReportQualityStatus, SourceTier
+from radar.domain import (
+    ClaimType,
+    ProviderRunStatus,
+    ProviderStatus,
+    ReportQualityStatus,
+    SourceKind,
+    SourceTier,
+)
 from radar.providers import make_document
 
 
@@ -42,13 +50,34 @@ def test_near_duplicate_titles_cluster() -> None:
     assert len(cluster_documents([one, two])) == 1
 
 
+def test_official_document_event_keeps_fact_claim_and_document_provenance() -> None:
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    document = make_document(
+        provider="official-rss",
+        tier=SourceTier.A,
+        publisher="Federal Reserve",
+        url="https://example.com/policy",
+        title="Federal Reserve keeps policy rate unchanged",
+        content="The committee kept its policy rate unchanged.",
+        published_at=now,
+    )
+
+    events, claims, evidence = extract_events([[document]], [], now)
+
+    assert len(events) == len(claims) == len(evidence) == 1
+    assert claims[0].claim_type is ClaimType.FACT
+    assert evidence[0].source_kind is SourceKind.DOCUMENT
+    assert evidence[0].source_id == document.id
+    assert evidence[0].source_document_id == document.id
+
+
 def test_quality_is_healthy_with_sufficient_markets_and_macro_support() -> None:
     quality = assess_report_quality(
         market_count=8,
         expected_market_count=10,
         macro_count=2,
         document_count=0,
-        event_count=0,
+        official_event_count=0,
         provider_statuses=[
             ProviderRunStatus(provider="rss", status=ProviderStatus.NO_DATA, item_count=0)
         ],
@@ -64,7 +93,7 @@ def test_quality_is_degraded_when_usable_coverage_is_incomplete() -> None:
         expected_market_count=10,
         macro_count=1,
         document_count=0,
-        event_count=0,
+        official_event_count=0,
         provider_statuses=[],
     )
 
@@ -77,7 +106,7 @@ def test_quality_is_insufficient_when_all_categories_are_severely_missing() -> N
         expected_market_count=10,
         macro_count=0,
         document_count=0,
-        event_count=0,
+        official_event_count=0,
         provider_statuses=[],
     )
 
@@ -115,7 +144,7 @@ def test_quality_gate_exact_boundaries_and_provider_policy(
         expected_market_count=10_000,
         macro_count=macro_count,
         document_count=0,
-        event_count=event_count,
+        official_event_count=event_count,
         provider_statuses=statuses,
     )
 
@@ -128,9 +157,23 @@ def test_quality_uses_unrounded_market_coverage_for_boundary_decisions() -> None
         expected_market_count=10_000,
         macro_count=1,
         document_count=0,
-        event_count=0,
+        official_event_count=0,
         provider_statuses=[],
     )
 
     assert quality.market_coverage == 0.6999
     assert quality.status is ReportQualityStatus.DEGRADED
+
+
+def test_market_events_do_not_count_as_official_quality_support() -> None:
+    quality = assess_report_quality(
+        market_count=7000,
+        expected_market_count=10_000,
+        macro_count=0,
+        document_count=0,
+        official_event_count=0,
+        provider_statuses=[],
+    )
+
+    assert quality.status is ReportQualityStatus.DEGRADED
+    assert "official events" in quality.reasons[0]

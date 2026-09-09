@@ -13,6 +13,7 @@ from radar.deterministic import (
     build_deterministic_summary,
     cluster_documents,
     extract_events,
+    extract_market_events,
 )
 from radar.domain import (
     CollectionBatch,
@@ -155,14 +156,33 @@ def _run_started_pipeline(
     markets = _flatten(batch.markets for batch in batches)
     macro = _flatten(batch.macro for batch in batches)
     clusters = cluster_documents(documents)
-    events, claims, evidence = extract_events(clusters, universe["entities"], started_at)
+    official_events, official_claims, official_evidence = extract_events(
+        clusters, universe["entities"], started_at
+    )
+    market_events, market_claims, market_evidence = extract_market_events(
+        markets, universe["assets"], started_at
+    )
+    macro_events, macro_claims, macro_evidence = (
+        store.save_macro_with_first_observed_events(run_id, macro, started_at)
+    )
+    events = sorted(
+        [*official_events, *market_events, *macro_events],
+        key=lambda item: item.importance_score,
+        reverse=True,
+    )
+    claims = [*official_claims, *market_claims, *macro_claims]
+    evidence = [*official_evidence, *market_evidence, *macro_evidence]
     summary = build_deterministic_summary(markets, macro, events)
     logger.info(
-        "Collection complete documents=%d markets=%d macro=%d clusters=%d events=%d",
+        "Collection complete documents=%d markets=%d macro=%d clusters=%d "
+        "official_events=%d market_events=%d macro_events=%d total_events=%d",
         len(documents),
         len(markets),
         len(macro),
         len(clusters),
+        len(official_events),
+        len(market_events),
+        len(macro_events),
         len(events),
     )
 
@@ -172,10 +192,15 @@ def _run_started_pipeline(
     analyses = []
     for event in events[:6]:
         pack = EvidencePack(
-            event=event,
-            claims=[claim_map[item_id] for item_id in event.claim_ids],
-            evidence=[evidence_map[item_id] for item_id in event.evidence_ids],
-            sources=[source_map[item_id] for item_id in event.source_document_ids],
+            event=event.model_copy(deep=True),
+            claims=[claim_map[item_id].model_copy(deep=True) for item_id in event.claim_ids],
+            evidence=[
+                evidence_map[item_id].model_copy(deep=True) for item_id in event.evidence_ids
+            ],
+            sources=[
+                source_map[item_id].model_copy(deep=True)
+                for item_id in event.source_document_ids
+            ],
         )
         try:
             analyses.append(llm.analyze(pack))
@@ -200,7 +225,6 @@ def _run_started_pipeline(
     store.save_claims(run_id, claims)
     store.save_events(run_id, events)
     store.save_markets(run_id, markets)
-    store.save_macro(run_id, macro)
 
     expected_market_count = sum(
         batch.diagnostics.get("market_items_expected", 0) for batch in batches
@@ -214,7 +238,7 @@ def _run_started_pipeline(
         expected_market_count=expected_market_count,
         macro_count=len(macro),
         document_count=len(documents),
-        event_count=len(events),
+        official_event_count=len(official_events),
         provider_statuses=provider_statuses,
     )
     logger.info(
@@ -251,12 +275,16 @@ def _run_started_pipeline(
         macro=macro,
         events=events[:10],
         claims=claim_map,
+        evidence=evidence_map,
         sources=source_map,
         analyses={item.event_id: item for item in analyses},
         summary=summary,
         coverage={
             "documents": len(documents),
             "events": len(events),
+            "official_events": len(official_events),
+            "market_events": len(market_events),
+            "macro_events": len(macro_events),
             "markets": len(markets),
             "macro": len(macro),
         },
@@ -314,6 +342,9 @@ def _run_started_pipeline(
         quality_status=quality.status,
         documents=len(documents),
         events=len(events),
+        official_events=len(official_events),
+        market_events=len(market_events),
+        macro_events=len(macro_events),
         markets=len(markets),
         macro=len(macro),
         email_status=email_status,
@@ -323,6 +354,9 @@ def _run_started_pipeline(
     details = {
         "documents": len(documents),
         "events": len(events),
+        "official_events": len(official_events),
+        "market_events": len(market_events),
+        "macro_events": len(macro_events),
         "markets": len(markets),
         "macro": len(macro),
         "quality_status": quality.status.value,

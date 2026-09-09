@@ -14,7 +14,10 @@ class HtmlReportRenderer:
     def __init__(self) -> None:
         self.environment = Environment(
             loader=FileSystemLoader(PROJECT_ROOT / "templates"),
-            autoescape=select_autoescape(["html", "xml"]),
+            autoescape=select_autoescape(
+                enabled_extensions=("html", "xml", "j2"),
+                default_for_string=True,
+            ),
             trim_blocks=True,
             lstrip_blocks=True,
         )

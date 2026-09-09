@@ -102,12 +102,32 @@
             <div style="font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:#6a7c8f;">{{ event.event_type.value }} · Importance {{ '%.1f'|format(event.importance_score) }}/100</div>
             <h3 style="margin:6px 0 8px;font-size:16px;line-height:1.4;color:#17202a;">{{ event.title }}</h3>
             <div style="font-size:13px;color:#667583;line-height:1.5;">
-              Evidence {{ event.evidence_ids|length }} · Sources {{ event.source_document_ids|length }} · Confidence {{ '%.0f'|format(event.confidence * 100) }}%
+              Evidence {{ event.evidence_ids|length }} · Confidence {{ '%.0f'|format(event.confidence * 100) }}%
             </div>
             <div style="margin-top:8px;font-size:13px;line-height:1.55;color:#4e5e6d;">
               {% for document_id in event.source_document_ids %}
                 {% set source = sources[document_id] %}
                 <a href="{{ source.canonical_url }}" style="color:#245d93;text-decoration:underline;">{{ source.publisher }}</a>{% if not loop.last %} · {% endif %}
+              {% endfor %}
+              {% for evidence_id in event.evidence_ids %}
+                {% set item = evidence[evidence_id] %}
+                {% if item.source_kind.value == 'MARKET_OBSERVATION' %}
+                  <div style="margin-top:5px;">
+                    {{ item.locator.asset }} ({{ item.locator.symbol }}) ·
+                    Previous {{ '%.6g'|format(item.locator.previous_close) }} ·
+                    Latest {{ '%.6g'|format(item.locator.latest_close) }} ·
+                    {{ '%+.2f'|format(item.locator.change_pct) }}% ·
+                    {{ item.locator.observed_at }} · {{ item.locator.provider }}
+                  </div>
+                {% elif item.source_kind.value == 'MACRO_OBSERVATION' %}
+                  <div style="margin-top:5px;">
+                    {{ item.locator.series }} ({{ item.locator.series_id }}) ·
+                    Period {{ item.locator.period }} · Value {{ item.locator.value }} {{ item.locator.unit }}
+                    {% if item.locator.previous_value is not none %} · Previous {{ item.locator.previous_value }}{% endif %}
+                    {% if item.locator.change is not none %} · Change {{ '%+g'|format(item.locator.change) }} {{ item.locator.change_unit }} {{ item.locator.change_label }}{% endif %}
+                    · first observed by Radar {{ item.locator.radar_observed_at }} · {{ item.locator.provider }}
+                  </div>
+                {% endif %}
               {% endfor %}
             </div>
             {% set analysis = analyses.get(event.id) %}

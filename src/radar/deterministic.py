@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -7,6 +8,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from radar.domain import (
+    AssetClass,
     Claim,
     ClaimType,
     DeterministicSummary,
@@ -20,10 +22,13 @@ from radar.domain import (
     ReportQualityAssessment,
     ReportQualityStatus,
     SourceDocument,
+    SourceKind,
     SourceTier,
     content_hash,
     stable_id,
 )
+
+logger = logging.getLogger(__name__)
 
 TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
 EVENT_RULES: list[tuple[EventType, tuple[str, ...]]] = [
@@ -39,6 +44,7 @@ EVENT_RULES: list[tuple[EventType, tuple[str, ...]]] = [
 ]
 TIER_POINTS = {SourceTier.A: 30.0, SourceTier.B: 22.0, SourceTier.C: 12.0, SourceTier.D: 4.0}
 TYPE_POINTS = {
+    EventType.MARKET_MOVE: 20.0,
     EventType.EARNINGS: 20.0,
     EventType.GUIDANCE: 24.0,
     EventType.M_AND_A: 24.0,
@@ -50,6 +56,15 @@ TYPE_POINTS = {
     EventType.RISK: 22.0,
     EventType.OTHER: 8.0,
 }
+MARKET_THRESHOLDS = {
+    AssetClass.EQUITY_INDEX: (2.0, 4.0),
+    AssetClass.EQUITY_ETF_PROXY: (2.0, 4.0),
+    AssetClass.FX: (1.0, 2.0),
+    AssetClass.COMMODITY: (2.0, 4.0),
+    AssetClass.CRYPTO: (5.0, 10.0),
+}
+NOTABLE_MARKET_IMPORTANCE = 55.0
+HIGH_MARKET_IMPORTANCE = 75.0
 
 
 def normalize_title(title: str) -> str:
@@ -132,6 +147,8 @@ def extract_events(
             evidence_items.append(
                 Evidence(
                     id=evidence_id,
+                    source_kind=SourceKind.DOCUMENT,
+                    source_id=document.id,
                     source_document_id=document.id,
                     locator={"type": "rss_or_provider_record", "title": document.title},
                     excerpt=excerpt,
@@ -189,6 +206,196 @@ def extract_events(
     return ranked, claims, evidence_items
 
 
+def extract_market_events(
+    markets: list[MarketObservation], asset_config: list[dict[str, Any]], now: datetime
+) -> tuple[list[Event], list[Claim], list[Evidence]]:
+    """Create policy-threshold market events from already collected observations."""
+    assets = {str(asset["symbol"]): asset for asset in asset_config}
+    events: list[Event] = []
+    claims: list[Claim] = []
+    evidence_items: list[Evidence] = []
+    for observation in markets:
+        asset = assets.get(observation.symbol)
+        if asset is None:
+            logger.warning(
+                "Skipping market event without universe asset_class symbol=%s",
+                observation.symbol,
+            )
+            continue
+        if observation.symbol == "^VIX":
+            if observation.change_pct < 5.0:
+                continue
+            event_type = EventType.RISK
+            high = observation.change_pct >= 10.0
+        else:
+            raw_asset_class = asset.get("asset_class")
+            try:
+                asset_class = AssetClass(str(raw_asset_class))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid asset_class for market symbol {observation.symbol}: "
+                    f"{raw_asset_class!r}"
+                ) from exc
+            notable_threshold, high_threshold = MARKET_THRESHOLDS[asset_class]
+            if abs(observation.change_pct) < notable_threshold:
+                continue
+            event_type = EventType.MARKET_MOVE
+            high = abs(observation.change_pct) >= high_threshold
+
+        observed_at = observation.observed_at.astimezone(UTC)
+        event_key = f"market:{observation.symbol}:{observed_at.isoformat()}"
+        excerpt = (
+            f"{observation.name} ({observation.symbol}) moved "
+            f"{observation.change_pct:+.2f}% from {observation.previous_close:g} to "
+            f"{observation.close:g} at {observed_at.isoformat()} "
+            f"according to {observation.provider}."
+        )
+        evidence_id = stable_id("evidence", f"{observation.id}|{content_hash(excerpt)}")
+        claim_id = stable_id("claim", event_key)
+        direction = "rose" if observation.change_pct >= 0 else "fell"
+        title = f"{observation.name} {direction} {abs(observation.change_pct):.2f}%"
+        evidence_items.append(
+            Evidence(
+                id=evidence_id,
+                source_kind=SourceKind.MARKET_OBSERVATION,
+                source_id=observation.id,
+                locator={
+                    "type": "market_bar",
+                    "asset": observation.name,
+                    "symbol": observation.symbol,
+                    "previous_close": observation.previous_close,
+                    "latest_close": observation.close,
+                    "change_pct": observation.change_pct,
+                    "observed_at": observed_at.isoformat(),
+                    "provider": observation.provider,
+                },
+                excerpt=excerpt,
+                checksum=content_hash(excerpt),
+                quality_score=0.75,
+            )
+        )
+        claims.append(
+            Claim(
+                id=claim_id,
+                claim_type=ClaimType.DERIVED,
+                text=excerpt,
+                evidence_ids=[evidence_id],
+                confidence=0.99,
+                as_of=observed_at,
+            )
+        )
+        importance_score = (
+            HIGH_MARKET_IMPORTANCE if high else NOTABLE_MARKET_IMPORTANCE
+        )
+        events.append(
+            Event(
+                id=stable_id("event", event_key),
+                event_key=event_key,
+                event_type=event_type,
+                title=title,
+                occurred_at=observed_at,
+                first_seen_at=now.astimezone(UTC),
+                last_seen_at=now.astimezone(UTC),
+                entity_ids=[observation.symbol],
+                claim_ids=[claim_id],
+                evidence_ids=[evidence_id],
+                source_document_ids=[],
+                importance_score=importance_score,
+                importance_components={
+                    "materiality": TYPE_POINTS[event_type],
+                    "threshold_severity": importance_score - TYPE_POINTS[event_type],
+                },
+                confidence=0.99,
+                is_demo=observation.is_demo,
+            )
+        )
+    ranked = sorted(events, key=lambda item: item.importance_score, reverse=True)
+    return ranked, claims, evidence_items
+
+
+def build_macro_event(
+    observation: MacroObservation, now: datetime
+) -> tuple[Event, Claim, Evidence]:
+    """Build a factual event for a period first observed by Radar."""
+    event_key = f"macro:{observation.series_id}:{observation.period}"
+    observed_at = observation.observed_at.astimezone(UTC)
+    value_text = (
+        f"{observation.value:g}%"
+        if observation.unit == "%"
+        else f"{observation.value:g} {observation.unit}"
+    )
+    change_text = ""
+    change_unit: str | None = None
+    if observation.change is not None:
+        if observation.unit == "%":
+            change_unit = "percentage points"
+        elif observation.unit == "index":
+            change_unit = "index points"
+        else:
+            change_unit = observation.unit
+        label = observation.change_label or "vs previous observation"
+        change_text = f"; change {observation.change:+g} {change_unit} {label}"
+    excerpt = (
+        f"{observation.name} ({observation.series_id}) period {observation.period}: "
+        f"{value_text}{change_text}; first observed by Radar at {observed_at.isoformat()} "
+        f"from {observation.provider}."
+    )
+    evidence_id = stable_id("evidence", f"{observation.id}|{content_hash(excerpt)}")
+    claim_id = stable_id("claim", event_key)
+    evidence = Evidence(
+        id=evidence_id,
+        source_kind=SourceKind.MACRO_OBSERVATION,
+        source_id=observation.id,
+        locator={
+            "type": "macro_period",
+            "series_id": observation.series_id,
+            "series": observation.name,
+            "period": observation.period,
+            "value": observation.value,
+            "unit": observation.unit,
+            "previous_value": observation.previous_value,
+            "change": observation.change,
+            "change_unit": change_unit,
+            "change_label": observation.change_label,
+            "radar_observed_at": observed_at.isoformat(),
+            "provider": observation.provider,
+        },
+        excerpt=excerpt,
+        checksum=content_hash(excerpt),
+        quality_score=1.0 if observation.provider == "bls-public-api" else 0.8,
+    )
+    claim = Claim(
+        id=claim_id,
+        claim_type=ClaimType.DERIVED,
+        text=excerpt,
+        evidence_ids=[evidence_id],
+        confidence=0.99,
+        as_of=observed_at,
+    )
+    event = Event(
+        id=stable_id("event", event_key),
+        event_key=event_key,
+        event_type=EventType.MACRO,
+        title=f"New period first observed by Radar: {observation.name} {observation.period}",
+        occurred_at=observed_at,
+        first_seen_at=now.astimezone(UTC),
+        last_seen_at=now.astimezone(UTC),
+        entity_ids=[observation.series_id],
+        claim_ids=[claim_id],
+        evidence_ids=[evidence_id],
+        source_document_ids=[],
+        importance_score=58.0,
+        importance_components={
+            "source_quality": 30.0,
+            "materiality": TYPE_POINTS[EventType.MACRO],
+            "first_observed": 8.0,
+        },
+        confidence=0.99,
+        is_demo=observation.is_demo,
+    )
+    return event, claim, evidence
+
+
 def build_deterministic_summary(
     markets: list[MarketObservation], macro: list[MacroObservation], events: list[Event]
 ) -> DeterministicSummary:
@@ -243,7 +450,7 @@ def assess_report_quality(
     expected_market_count: int,
     macro_count: int,
     document_count: int,
-    event_count: int,
+    official_event_count: int,
     provider_statuses: list[ProviderRunStatus],
 ) -> ReportQualityAssessment:
     if expected_market_count > 0:
@@ -251,12 +458,12 @@ def assess_report_quality(
     else:
         market_coverage = 1.0 if market_count else 0.0
 
-    has_support = macro_count > 0 or event_count > 0
+    has_support = macro_count > 0 or official_event_count > 0
     severely_missing = (
         market_coverage < 0.25
         and macro_count == 0
         and document_count == 0
-        and event_count == 0
+        and official_event_count == 0
     )
     if severely_missing:
         return ReportQualityAssessment(
