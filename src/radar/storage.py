@@ -35,6 +35,7 @@ from radar.domain import (
     SourceDocument,
     SourceKind,
 )
+from radar.ranking import rank_driver_candidates
 
 metadata = MetaData()
 EVIDENCE_PROVENANCE_MIGRATION = "001_c1_evidence_provenance"
@@ -520,9 +521,10 @@ class RadarStore:
             rows = connection.execute(
                 select(driver_candidates_table.c.payload_json)
                 .where(driver_candidates_table.c.target_event_id == target_event_id)
-                .order_by(driver_candidates_table.c.id)
             ).scalars()
-            return [DriverCandidate.model_validate_json(payload) for payload in rows]
+            return rank_driver_candidates(
+                DriverCandidate.model_validate_json(payload) for payload in rows
+            )
 
     def save_markets(self, run_id: str, items: Iterable[MarketObservation]) -> None:
         for item in items:

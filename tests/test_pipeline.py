@@ -958,6 +958,75 @@ def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatc
     assert "inflation pressures & context" not in html
 
 
+def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch) -> None:
+    now = datetime(2026, 9, 9, 20, tzinfo=UTC)
+    exact = make_document(
+        provider="official-rss",
+        tier=SourceTier.A,
+        publisher="Federal Reserve",
+        url="https://example.com/exact/s-and-p-500",
+        title="S&P 500 responds to Federal Reserve policy announcement",
+        content="The official statement explicitly named the S&P 500.",
+        published_at=now.replace(day=8),
+    )
+    broad_a = make_document(
+        provider="official-rss",
+        tier=SourceTier.A,
+        publisher="Statistics Office",
+        url="https://example.com/topic/inflation",
+        title="Consumer price index shows inflation pressures",
+        content="The consumer price index showed inflation pressures.",
+        published_at=now.replace(day=8, hour=18),
+    )
+    broad_b = make_document(
+        provider="official-rss",
+        tier=SourceTier.B,
+        publisher="Independent Newswire",
+        url="https://example.net/topic/inflation",
+        title="Consumer price index shows inflation pressures",
+        content="An independent report covered the consumer price index.",
+        published_at=now.replace(day=8, hour=19),
+    )
+    market = MarketObservation(
+        id=stable_id("market", "ranked-pipeline|^GSPC|2026-09-09"),
+        symbol="^GSPC",
+        name="S&P 500",
+        region="US",
+        observed_at=now,
+        close=98,
+        previous_close=100,
+        change_pct=-2,
+        currency="USD",
+        provider="test-market",
+    )
+    batch = CollectionBatch(
+        provider="ranked-driver-fixture",
+        documents=[broad_a, exact, broad_b],
+        markets=[market],
+        diagnostics={"market_items_expected": 1, "market_items_collected": 1},
+    )
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(batch)],
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="live",
+        database_url=f"sqlite:///{(tmp_path / 'ranked-pipeline.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=False,
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=now)
+
+    assert result.driver_candidates == 2
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
+        encoding="utf-8"
+    )
+    assert html.index("Confidence MEDIUM") < html.index("Confidence HIGH")
+
+
 def test_report_renders_context_only_for_vix_and_equity_weakness(
     tmp_path, monkeypatch
 ) -> None:

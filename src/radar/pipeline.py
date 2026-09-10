@@ -35,6 +35,7 @@ from radar.explanation import (
 )
 from radar.llm import LLMProvider, build_llm_provider
 from radar.providers import build_providers
+from radar.ranking import rank_driver_candidates
 from radar.report import HtmlReportRenderer, report_context
 from radar.storage import RadarStore
 
@@ -217,6 +218,7 @@ def _run_started_pipeline(
             documents=documents,
             assets=universe["assets"],
         )
+    driver_candidates = rank_driver_candidates(driver_candidates)
     summary = build_deterministic_summary(markets, macro, events)
     logger.info(
         "Collection complete documents=%d markets=%d macro=%d clusters=%d "

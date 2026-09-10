@@ -515,6 +515,36 @@ def test_driver_candidate_round_trip_and_stable_upsert(tmp_path) -> None:
     assert store.table_count(driver_candidates_table) == 2
 
 
+def test_driver_candidate_round_trip_preserves_payload_and_semantic_order(tmp_path) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'ranked-round-trip.db').as_posix()}")
+    store.initialize()
+    medium_exact = driver_candidate(candidate_id="z-medium-exact")
+    high_topic = driver_candidate(candidate_id="a-high-topic").model_copy(
+        update={
+            "relevance_relation": DriverRelevance.STRONG_TOPIC,
+            "confidence": DriverConfidence.HIGH,
+            "confidence_components": {
+                "temporal": "PRIOR",
+                "relevance": "STRONG_TOPIC",
+                "source_quality": "A_B",
+                "independent_publishers": "2",
+                "conflict": "NO",
+            },
+            "confidence_reasons": [
+                "Prior, relevant Tier A/B evidence has independent corroboration."
+            ],
+        }
+    )
+    original_by_id = {item.id: item for item in [high_topic, medium_exact]}
+
+    store.save_driver_candidates("run-1", [high_topic, medium_exact])
+    loaded = store.load_driver_candidates_for_target("target-1")
+
+    assert [item.id for item in loaded] == [medium_exact.id, high_topic.id]
+    assert len(loaded) == len(original_by_id)
+    assert {item.id: item for item in loaded} == original_by_id
+
+
 def test_repeated_macro_period_reuses_persisted_first_observation(tmp_path) -> None:
     store = RadarStore(f"sqlite:///{(tmp_path / 'macro-first.db').as_posix()}")
     store.initialize()
