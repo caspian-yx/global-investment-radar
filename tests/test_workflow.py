@@ -6,13 +6,13 @@ import subprocess
 from pathlib import Path
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "daily.yml"
-RADAR_COMMAND = "uv run radar daily --no-ai"
+RADAR_COMMAND = "uv run radar daily --ai"
 
 
 def _daily_run_script() -> str:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     match = re.search(
-        r"- name: Run live no-AI radar and deliver email\n"
+        r"- name: Run live AI radar and deliver email\n"
         r"(?: {8}.*\n)*?"
         r" {8}run: \|\n"
         r"(?P<script>(?: {10}.*(?:\n|$))+)",
@@ -29,6 +29,12 @@ def test_daily_workflow_has_failure_safe_artifact_constraints() -> None:
 
     assert "shell: bash" in workflow
     assert "secrets." not in job_environment
+    assert 'AI_ENABLED: "true"' in job_environment
+    assert 'DAILY_LLM_BUDGET: "1"' in job_environment
+    assert "LLM_PROVIDER: deepseek" in job_environment
+    assert 'LLM_MODEL: "deepseek-v4-flash"' in job_environment
+    assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in workflow
+    assert "--no-ai" not in workflow
     assert "set -o pipefail" in script
     assert f"{RADAR_COMMAND} " in script
     assert "| tee outputs/run-result.json" in script

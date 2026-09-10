@@ -21,7 +21,7 @@ from radar.domain import (
     StructuredAnalysis,
     stable_id,
 )
-from radar.llm import DisabledLLMProvider
+from radar.llm import DisabledLLMProvider, LLMConfigurationError, LLMResponse
 from radar.pipeline import run_daily
 from radar.providers import DemoProvider, make_document
 from radar.report import HtmlReportRenderer
@@ -690,6 +690,108 @@ def test_llm_failure_cannot_change_deterministic_events(tmp_path, monkeypatch) -
     assert result.macro_events == 0
     assert RadarStore(settings.database_url).table_count(events_table) == 5
     assert any(status.provider == "llm:failing-llm" for status in result.provider_statuses)
+
+
+def test_structured_ai_configuration_failure_keeps_deterministic_report(
+    tmp_path, monkeypatch
+) -> None:
+    def fail_generation_provider(settings: Settings) -> object:
+        _ = settings
+        raise LLMConfigurationError("missing test credentials")
+
+    monkeypatch.setattr("radar.pipeline.build_generation_provider", fail_generation_provider)
+    settings = Settings(
+        app_env="test",
+        data_mode="demo",
+        database_url=f"sqlite:///{(tmp_path / 'structured-config-failure.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=True,
+        daily_llm_budget=1,
+        llm_provider="deepseek",
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+
+    assert result.report_path.endswith("global-investment-radar-2026-09-07.html")
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Top Global Events" in html
+    assert "AI explanation" not in html
+
+
+def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
+    tmp_path, monkeypatch
+) -> None:
+    class StructuredProvider:
+        name = "fake-structured"
+
+        def __init__(self) -> None:
+            self.requests = []
+
+        def generate(self, request):
+            self.requests.append(request.model_copy(deep=True))
+            payload = json.loads(request.prompt.split("INPUT_JSON:\n", maxsplit=1)[1])
+            target_id = payload["target"]["target_event_id"]
+            candidate_ids = [item["candidate_id"] for item in payload["candidates"]]
+            return LLMResponse(
+                content=json.dumps(
+                    {
+                        "target_event_id": target_id,
+                        "headline": f"Generated headline for {target_id}",
+                        "summary": "Generated deterministic fixture summary.",
+                        "candidate_explanations": [
+                            {
+                                "candidate_id": candidate_id,
+                                "explanation": f"Generated explanation for {candidate_id}.",
+                            }
+                            for candidate_id in candidate_ids
+                        ],
+                        "uncertainty": None,
+                    }
+                ),
+                provider=self.name,
+                requested_model="fixture-model",
+                returned_model="fixture-model",
+                latency_seconds=0,
+            )
+
+    provider = StructuredProvider()
+    rendered_context: dict[str, object] = {}
+    original_render = HtmlReportRenderer.render
+
+    def capture_render(renderer: HtmlReportRenderer, context: dict[str, object]) -> str:
+        rendered_context.update(context)
+        return original_render(renderer, context)
+
+    monkeypatch.setattr("radar.pipeline.build_generation_provider", lambda settings: provider)
+    monkeypatch.setattr(HtmlReportRenderer, "render", capture_render)
+    settings = Settings(
+        app_env="test",
+        data_mode="demo",
+        database_url=f"sqlite:///{(tmp_path / 'structured-success.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=True,
+        daily_llm_budget=1,
+        llm_provider="fake",
+        email_mode="disabled",
+    )
+
+    run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+
+    assert len(provider.requests) == 1
+    explanations = rendered_context["structured_explanations"]
+    assert isinstance(explanations, dict)
+    assert len(explanations) == 1
+    target_id, explanation = next(iter(explanations.items()))
+    assert target_id == explanation.target_event_id
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
+        encoding="utf-8"
+    )
+    assert f"Generated headline for {target_id}" in html
+    assert "AI explanation" in html
+    assert "AI analysis is disabled" not in html
 
 
 def test_deterministic_events_are_available_before_optional_llm(

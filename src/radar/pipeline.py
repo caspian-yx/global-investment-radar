@@ -22,9 +22,11 @@ from radar.domain import (
     ProviderRunStatus,
     ProviderStatus,
     ReportQualityStatus,
+    StructuredExplanation,
     stable_id,
 )
 from radar.email import build_email_sender
+from radar.enrichment import generate_structured_explanations
 from radar.explanation import (
     build_cross_asset_context,
     build_driver_candidates,
@@ -34,7 +36,7 @@ from radar.explanation import (
     unique_by_id,
     validate_driver_candidate_bundle,
 )
-from radar.llm import LLMProvider, build_llm_provider
+from radar.llm import AnalysisProvider, LLMError, build_generation_provider, build_llm_provider
 from radar.providers import build_providers
 from radar.report import HtmlReportRenderer, report_context
 from radar.storage import RadarStore
@@ -120,7 +122,7 @@ def _run_started_pipeline(
     run_key: str,
     run_id: str,
     universe: dict[str, Any],
-    llm: LLMProvider,
+    llm: AnalysisProvider,
     store: RadarStore,
     timer_started: float,
 ) -> PipelineResult:
@@ -229,6 +231,20 @@ def _run_started_pipeline(
         for bundle in explanation_bundles
         for candidate in bundle.driver_candidates
     ]
+    structured_explanations: dict[str, StructuredExplanation] = {}
+    if settings.effective_ai_enabled and explanation_bundles:
+        try:
+            generation_provider = build_generation_provider(settings)
+        except LLMError as exc:
+            logger.warning(
+                "Optional structured explanation provider unavailable error_type=%s",
+                type(exc).__name__,
+            )
+        else:
+            structured_explanations = generate_structured_explanations(
+                explanation_bundles,
+                generation_provider,
+            )
     summary = build_deterministic_summary(markets, macro, events)
     logger.info(
         "Collection complete documents=%d markets=%d macro=%d clusters=%d "
@@ -341,6 +357,7 @@ def _run_started_pipeline(
         explanation_bundles={
             bundle.target_event.id: bundle for bundle in explanation_bundles
         },
+        structured_explanations=structured_explanations,
         cross_asset_context={
             event.id: [claim_map[item_id] for item_id in cross_asset_by_target[event.id]]
             for event in market_events

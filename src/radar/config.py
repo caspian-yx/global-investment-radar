@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +46,15 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="disabled", validation_alias="LLM_PROVIDER")
     llm_model: str | None = Field(default=None, validation_alias="LLM_MODEL")
     llm_base_url: str | None = Field(default=None, validation_alias="LLM_BASE_URL")
-    llm_api_key: str | None = Field(default=None, validation_alias="LLM_API_KEY")
+    llm_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DEEPSEEK_API_KEY", "LLM_API_KEY"),
+    )
+    llm_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias="LLM_TIMEOUT_SECONDS",
+        gt=0,
+    )
 
     email_mode: Literal["disabled", "file", "smtp"] = Field(
         default="disabled", validation_alias="EMAIL_MODE"

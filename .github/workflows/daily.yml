@@ -32,9 +32,10 @@ jobs:
       DATA_MODE: ${{ inputs.data_mode || 'live' }}
       BUSINESS_TIMEZONE: Asia/Shanghai
       LOOKBACK_HOURS: "48"
-      AI_ENABLED: "false"
-      DAILY_LLM_BUDGET: "0"
-      LLM_PROVIDER: disabled
+      AI_ENABLED: "true"
+      DAILY_LLM_BUDGET: "1"
+      LLM_PROVIDER: deepseek
+      LLM_MODEL: "deepseek-v4-flash"
       EMAIL_MODE: smtp
       REPORT_OUTPUT_DIR: outputs/reports
     steps:
@@ -54,7 +55,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
         run: uv run radar doctor
-      - name: Run live no-AI radar and deliver email
+      - name: Run live AI radar and deliver email
         shell: bash
         env:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
@@ -63,11 +64,12 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
         run: |
           set -o pipefail
           mkdir -p outputs
-          uv run radar daily --no-ai \
+          uv run radar daily --ai \
             2> >(tee outputs/run-diagnostics.log >&2) \
             | tee outputs/run-result.json
       - name: Upload report and run result

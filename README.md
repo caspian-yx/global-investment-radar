@@ -12,14 +12,15 @@ Implemented in this milestone:
 - Deterministic normalization, URL cleanup, near-duplicate clustering, event classification, entity mapping and explainable importance ranking.
 - Evidence-first `SourceDocument → Evidence → Claim → Event` domain model.
 - SQLite development storage and PostgreSQL-compatible SQLAlchemy schema.
-- Optional `LLMProvider` protocol with disabled and fake implementations.
+- Provider-neutral text-generation contract with DeepSeek transport and a controllable fake.
+- Deterministic `ExplanationBundle` prompt and strict structured-explanation parser.
 - Hard no-AI behavior when `AI_ENABLED=false` or `DAILY_LLM_BUDGET=0`.
 - Responsive HTML email report and disabled/file/SMTP email adapters.
 - CLI, tests and GitHub Actions CI/daily workflows.
 - Cloud-MVP preparation: Asia/Shanghai business date, scheduled live/no-AI execution,
   SMTP delivery, operational logs, failure-preserved artifacts, and optional PostgreSQL.
 
-Not implemented yet: real LLM adapters, company filing/XBRL extraction, licensed global market provider, earnings consensus/transcripts, theme scoring, weekly report or dashboard.
+Not implemented yet: connecting the DeepSeek transport to the analysis pipeline, company filing/XBRL extraction, licensed global market provider, earnings consensus/transcripts, theme scoring, weekly report or dashboard.
 
 ## Quick start
 
@@ -65,18 +66,17 @@ DAILY_LLM_BUDGET=0
 LLM_PROVIDER=disabled
 ```
 
-Either `AI_ENABLED=false` or a zero budget prevents AI calls. Version 0.1 installs no vendor AI SDK. Future adapters can read centralized settings without changing event, claim, evidence, ranking or report code:
+Either `AI_ENABLED=false` or a zero budget prevents AI calls from the existing analysis pipeline. The DeepSeek transport uses `httpx` directly and is not yet connected to that pipeline. Copy `.env.example` to the ignored `.env`, fill in `DEEPSEEK_API_KEY`, then run the explicit smoke command when a real request is intended:
 
-```dotenv
-AI_ENABLED=true
-DAILY_LLM_BUDGET=1.50
-LLM_PROVIDER=future-provider
-LLM_MODEL=model-name
-LLM_BASE_URL=https://provider.example/v1
-LLM_API_KEY=secret
+```bash
+uv run python -m radar.llm_smoke
 ```
 
-An unknown or unavailable provider falls back to deterministic mode. Real adapters must accept an `EvidencePack`, return `StructuredAnalysis`, validate cited claim IDs and never perform deterministic financial calculations.
+The smoke command is opt-in and makes one small `/chat/completions` request. Ordinary settings construction and deterministic runs do not require a DeepSeek credential. An unknown or unavailable analysis provider continues to fall back to deterministic mode.
+
+The C3.2 structured-explanation layer is intentionally not connected to the production
+pipeline or HTML report. It preserves C2 candidate order and reference closure, accepts only
+strict JSON, and attaches provider/model/usage metadata from the trusted local `LLMResponse`.
 
 ## Database
 
@@ -147,7 +147,7 @@ remaining human checklist.
 ## Architecture extension points
 
 - Add data sources by implementing `DataProvider.collect()` and returning a validated `CollectionBatch`.
-- Add an AI backend by implementing `LLMProvider.analyze(EvidencePack)`.
+- Add a text-generation backend by implementing `LLMProvider.generate(LLMRequest)`.
 - Add delivery channels by implementing `EmailSender.send()`.
 - Core financial data models remain provider-independent.
 

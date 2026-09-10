@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from radar.config import PROJECT_ROOT
-from radar.domain import content_hash
+from radar.domain import StructuredExplanation, content_hash
 
 
 class HtmlReportRenderer:
@@ -33,5 +34,13 @@ class HtmlReportRenderer:
         return path, content_hash(html)
 
 
-def report_context(**kwargs: Any) -> dict[str, Any]:
-    return {"generated_at": datetime.now(UTC), **kwargs}
+def report_context(
+    *,
+    structured_explanations: Mapping[str, StructuredExplanation | None] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now(UTC),
+        "structured_explanations": dict(structured_explanations or {}),
+        **kwargs,
+    }

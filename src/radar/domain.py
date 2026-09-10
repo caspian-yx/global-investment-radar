@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ID_NAMESPACE = uuid.UUID("e482538d-22c4-4a71-9713-06e7a4193378")
 
@@ -252,6 +252,36 @@ class ExplanationBundle(BaseModel):
         if [item.id for item in self.evidence] != expected_evidence_ids:
             raise ValueError("ExplanationBundle Evidence must be its exact linked set")
         return self
+
+
+class CandidateExplanation(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    candidate_id: str = Field(min_length=1, pattern=r".*\S.*")
+    explanation: str = Field(min_length=1, pattern=r".*\S.*")
+
+
+class GenerationMetadata(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(min_length=1, pattern=r".*\S.*")
+    requested_model: str = Field(min_length=1, pattern=r".*\S.*")
+    returned_model: str | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    latency_seconds: float = Field(ge=0)
+
+
+class StructuredExplanation(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_event_id: str = Field(min_length=1, pattern=r".*\S.*")
+    headline: str = Field(min_length=1, pattern=r".*\S.*")
+    summary: str = Field(min_length=1, pattern=r".*\S.*")
+    candidate_explanations: tuple[CandidateExplanation, ...]
+    uncertainty: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
+    generation: GenerationMetadata
 
 
 class MarketObservation(BaseModel):
