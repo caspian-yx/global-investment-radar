@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -17,6 +18,7 @@ from radar.domain import (
     Event,
     EventType,
     Evidence,
+    ExplanationBundle,
     MacroObservation,
     MarketObservation,
     SessionKind,
@@ -27,6 +29,7 @@ from radar.domain import (
     content_hash,
     stable_id,
 )
+from radar.ranking import rank_driver_candidates
 
 DRIVER_RULE_VERSION = "c2.1-driver-v1"
 CONTEXT_RULE_VERSION = "c2.1-context-v1"
@@ -652,6 +655,70 @@ def unique_by_id[T: _HasId](items: list[T]) -> list[T]:
             raise ValueError(f"Conflicting duplicate payload for ID {item.id}")
         result.setdefault(item.id, item)
     return [result[item_id] for item_id in sorted(result)]
+
+
+def build_explanation_bundles(
+    *,
+    target_events: Iterable[Event],
+    driver_candidates: Iterable[DriverCandidate],
+    claims: Iterable[Claim],
+    evidence: Iterable[Evidence],
+) -> list[ExplanationBundle]:
+    """Package validated candidates and their exact linked objects by target."""
+    targets = unique_by_id(list(target_events))
+    targets_by_id = {item.id: item for item in targets}
+    for target in targets:
+        if target.event_type not in {EventType.MARKET_MOVE, EventType.RISK}:
+            raise ValueError("ExplanationBundle has an unknown or ineligible target Event")
+
+    claims_by_id = {item.id: item for item in unique_by_id(list(claims))}
+    evidence_by_id = {item.id: item for item in unique_by_id(list(evidence))}
+    candidates_by_target: dict[str, list[DriverCandidate]] = defaultdict(list)
+    candidate_ids: set[str] = set()
+    for candidate in driver_candidates:
+        if candidate.id in candidate_ids:
+            raise ValueError(f"Duplicate DriverCandidate ID {candidate.id}")
+        candidate_ids.add(candidate.id)
+        if candidate.target_event_id not in targets_by_id:
+            raise ValueError("DriverCandidate has an unknown or ineligible target Event")
+        candidates_by_target[candidate.target_event_id].append(candidate)
+
+    bundles: list[ExplanationBundle] = []
+    for target in targets:
+        ranked_candidates = rank_driver_candidates(candidates_by_target[target.id])
+        claim_ids = sorted(
+            {item.interpretation_claim_id for item in ranked_candidates}
+        )
+        missing_claim_ids = [item_id for item_id in claim_ids if item_id not in claims_by_id]
+        if missing_claim_ids:
+            raise ValueError(
+                "DriverCandidate is missing interpretation Claim: "
+                + ", ".join(missing_claim_ids)
+            )
+        evidence_ids = sorted(
+            {
+                evidence_id
+                for candidate in ranked_candidates
+                for evidence_id in candidate.evidence_ids
+            }
+        )
+        missing_evidence_ids = [
+            item_id for item_id in evidence_ids if item_id not in evidence_by_id
+        ]
+        if missing_evidence_ids:
+            raise ValueError(
+                "DriverCandidate is missing Evidence: "
+                + ", ".join(missing_evidence_ids)
+            )
+        bundles.append(
+            ExplanationBundle(
+                target_event=target,
+                driver_candidates=ranked_candidates,
+                claims=[claims_by_id[item_id] for item_id in claim_ids],
+                evidence=[evidence_by_id[item_id] for item_id in evidence_ids],
+            )
+        )
+    return bundles
 
 
 def build_cross_asset_context(

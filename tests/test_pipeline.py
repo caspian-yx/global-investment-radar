@@ -11,6 +11,7 @@ from radar.cli import app
 from radar.config import Settings
 from radar.domain import (
     CollectionBatch,
+    DriverConfidence,
     EvidencePack,
     MacroObservation,
     MarketObservation,
@@ -23,6 +24,7 @@ from radar.domain import (
 from radar.llm import DisabledLLMProvider
 from radar.pipeline import run_daily
 from radar.providers import DemoProvider, make_document
+from radar.report import HtmlReportRenderer
 from radar.storage import (
     RadarStore,
     driver_candidates_table,
@@ -1017,10 +1019,27 @@ def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch)
         ai_enabled=False,
         email_mode="disabled",
     )
+    rendered_context: dict[str, object] = {}
+    original_render = HtmlReportRenderer.render
+
+    def capture_render(renderer: HtmlReportRenderer, context: dict[str, object]) -> str:
+        rendered_context.update(context)
+        return original_render(renderer, context)
+
+    monkeypatch.setattr(HtmlReportRenderer, "render", capture_render)
 
     result = run_daily(settings, now=now)
 
     assert result.driver_candidates == 2
+    assert "driver_candidates" not in rendered_context
+    bundles_by_target = rendered_context["explanation_bundles"]
+    assert isinstance(bundles_by_target, dict)
+    assert len(bundles_by_target) == 1
+    bundle = next(iter(bundles_by_target.values()))
+    assert [item.confidence for item in bundle.driver_candidates] == [
+        DriverConfidence.MEDIUM,
+        DriverConfidence.HIGH,
+    ]
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
         encoding="utf-8"
     )

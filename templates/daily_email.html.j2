@@ -133,7 +133,8 @@
             {% if event.event_type.value in ['market_move', 'risk'] %}
             <div style="margin-top:12px;padding:12px;background:#f5f8fb;font-size:13px;line-height:1.55;color:#33485e;">
               <strong>Possible drivers</strong>
-              {% set candidates = driver_candidates.get(event.id, []) %}
+              {% set bundle = explanation_bundles.get(event.id) %}
+              {% set candidates = bundle.driver_candidates if bundle else [] %}
               {% for candidate in candidates %}
               <div style="margin-top:8px;">
                 {{ claims[candidate.interpretation_claim_id].text }}

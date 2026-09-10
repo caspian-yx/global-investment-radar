@@ -210,6 +210,50 @@ class DriverCandidate(BaseModel):
         return self
 
 
+class ExplanationBundle(BaseModel):
+    target_event: Event
+    driver_candidates: list[DriverCandidate]
+    claims: list[Claim]
+    evidence: list[Evidence]
+
+    @model_validator(mode="after")
+    def validate_linked_contents(self) -> ExplanationBundle:
+        from radar.ranking import rank_driver_candidates
+
+        if self.target_event.event_type not in {
+            EventType.MARKET_MOVE,
+            EventType.RISK,
+        }:
+            raise ValueError("ExplanationBundle target must be a market/risk Event")
+        candidate_ids = [item.id for item in self.driver_candidates]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("ExplanationBundle DriverCandidate IDs must be unique")
+        if any(
+            item.target_event_id != self.target_event.id
+            for item in self.driver_candidates
+        ):
+            raise ValueError("ExplanationBundle DriverCandidates must share its target Event")
+        if self.driver_candidates != rank_driver_candidates(self.driver_candidates):
+            raise ValueError(
+                "ExplanationBundle DriverCandidates must use C2.2 semantic order"
+            )
+        expected_claim_ids = sorted(
+            {item.interpretation_claim_id for item in self.driver_candidates}
+        )
+        if [item.id for item in self.claims] != expected_claim_ids:
+            raise ValueError("ExplanationBundle Claims must be its exact linked set")
+        expected_evidence_ids = sorted(
+            {
+                evidence_id
+                for candidate in self.driver_candidates
+                for evidence_id in candidate.evidence_ids
+            }
+        )
+        if [item.id for item in self.evidence] != expected_evidence_ids:
+            raise ValueError("ExplanationBundle Evidence must be its exact linked set")
+        return self
+
+
 class MarketObservation(BaseModel):
     id: str
     symbol: str

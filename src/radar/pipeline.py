@@ -28,6 +28,7 @@ from radar.email import build_email_sender
 from radar.explanation import (
     build_cross_asset_context,
     build_driver_candidates,
+    build_explanation_bundles,
     build_macro_backdrop,
     build_observation_evidence,
     unique_by_id,
@@ -35,7 +36,6 @@ from radar.explanation import (
 )
 from radar.llm import LLMProvider, build_llm_provider
 from radar.providers import build_providers
-from radar.ranking import rank_driver_candidates
 from radar.report import HtmlReportRenderer, report_context
 from radar.storage import RadarStore
 
@@ -218,7 +218,17 @@ def _run_started_pipeline(
             documents=documents,
             assets=universe["assets"],
         )
-    driver_candidates = rank_driver_candidates(driver_candidates)
+    explanation_bundles = build_explanation_bundles(
+        target_events=market_events,
+        driver_candidates=driver_candidates,
+        claims=claims,
+        evidence=evidence,
+    )
+    driver_candidates = [
+        candidate
+        for bundle in explanation_bundles
+        for candidate in bundle.driver_candidates
+    ]
     summary = build_deterministic_summary(markets, macro, events)
     logger.info(
         "Collection complete documents=%d markets=%d macro=%d clusters=%d "
@@ -328,11 +338,8 @@ def _run_started_pipeline(
         evidence=evidence_map,
         sources=source_map,
         analyses={item.event_id: item for item in analyses},
-        driver_candidates={
-            event.id: [
-                item for item in driver_candidates if item.target_event_id == event.id
-            ]
-            for event in market_events
+        explanation_bundles={
+            bundle.target_event.id: bundle for bundle in explanation_bundles
         },
         cross_asset_context={
             event.id: [claim_map[item_id] for item_id in cross_asset_by_target[event.id]]
