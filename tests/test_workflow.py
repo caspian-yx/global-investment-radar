@@ -35,6 +35,7 @@ def test_daily_workflow_has_failure_safe_artifact_constraints() -> None:
     assert "LLM_PROVIDER: deepseek" in job_environment
     assert 'LLM_MODEL: "deepseek-v4-flash"' in job_environment
     assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in workflow
+    assert "SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}" in workflow
     assert "--no-ai" not in workflow
     assert "set -o pipefail" in script
     assert f"{RADAR_COMMAND} " in script

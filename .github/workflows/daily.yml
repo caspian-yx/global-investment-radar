@@ -65,6 +65,7 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
         run: |

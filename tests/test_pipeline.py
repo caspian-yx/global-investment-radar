@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 from radar.cli import app
 from radar.config import Settings
 from radar.domain import (
+    AIEnrichmentResult,
+    AIRunUsage,
     CollectionBatch,
     DriverConfidence,
     EvidencePack,
@@ -22,7 +24,7 @@ from radar.domain import (
     stable_id,
 )
 from radar.llm import DisabledLLMProvider, LLMConfigurationError, LLMResponse
-from radar.pipeline import run_daily
+from radar.pipeline import _resolve_ai_status, run_daily
 from radar.providers import DemoProvider, make_document
 from radar.report import HtmlReportRenderer
 from radar.storage import (
@@ -190,6 +192,62 @@ def test_fake_llm_is_blocked_in_production(tmp_path) -> None:
     )
     assert result.ai_status == "disabled"
     assert "TEST AI OUTPUT" not in html
+
+
+def test_ai_status_resolver_distinguishes_disabled_success_partial_and_failure() -> None:
+    disabled = Settings(ai_enabled=False, daily_llm_budget=0)
+    enabled = Settings(ai_enabled=True, daily_llm_budget=1, llm_provider="deepseek")
+
+    def enrichment(
+        *,
+        attempted: int,
+        succeeded: int,
+        failed: int,
+        skipped: int = 0,
+        exhausted: bool = False,
+    ) -> AIEnrichmentResult:
+        return AIEnrichmentResult(
+            explanations={},
+            usage=AIRunUsage(
+                requests_attempted=attempted,
+                requests_succeeded=succeeded,
+                requests_failed=failed,
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=0,
+                targets_skipped_due_to_budget=skipped,
+                budget_exhausted=exhausted,
+            ),
+        )
+
+    assert _resolve_ai_status(
+        disabled,
+        enrichment(attempted=0, succeeded=0, failed=0),
+        [],
+        has_bundles=False,
+        provider_available=False,
+    ) == "disabled"
+    assert _resolve_ai_status(
+        enabled,
+        enrichment(attempted=1, succeeded=1, failed=0),
+        [],
+        has_bundles=True,
+        provider_available=True,
+    ) == "enabled"
+    assert _resolve_ai_status(
+        enabled,
+        enrichment(attempted=2, succeeded=1, failed=1),
+        [],
+        has_bundles=True,
+        provider_available=True,
+    ) == "partial"
+    assert _resolve_ai_status(
+        enabled,
+        enrichment(attempted=1, succeeded=0, failed=1),
+        [],
+        has_bundles=True,
+        provider_available=True,
+    ) == "failed"
 
 
 def test_business_timezone_controls_report_date(tmp_path) -> None:
@@ -746,6 +804,7 @@ def test_structured_ai_configuration_failure_keeps_deterministic_report(
     result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
     assert result.report_path.endswith("global-investment-radar-2026-09-07.html")
+    assert result.ai_status == "failed"
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
@@ -854,12 +913,13 @@ def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
         report_output_dir=tmp_path / "reports",
         ai_enabled=True,
         daily_llm_budget=1,
-        llm_provider="fake",
+        llm_provider="deepseek",
         email_mode="disabled",
     )
 
-    run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+    result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
+    assert result.ai_status == "enabled"
     assert len(provider.requests) == 1
     explanations = rendered_context["structured_explanations"]
     assert isinstance(explanations, dict)

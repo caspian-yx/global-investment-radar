@@ -16,11 +16,13 @@ from radar.deterministic import (
     extract_market_events,
 )
 from radar.domain import (
+    AIEnrichmentResult,
     EvidencePack,
     PipelineResult,
     ProviderRunStatus,
     ProviderStatus,
     ReportQualityStatus,
+    StructuredAnalysis,
     stable_id,
 )
 from radar.email import build_email_sender
@@ -43,6 +45,50 @@ from radar.storage import RadarStore
 logger = logging.getLogger(__name__)
 
 
+def _initial_ai_status(settings: Settings) -> str:
+    if not settings.effective_ai_enabled:
+        return "disabled"
+    provider = settings.llm_provider.casefold().strip()
+    if provider in {"", "disabled", "none"}:
+        return "disabled"
+    if provider == "fake":
+        return "disabled" if settings.app_env == "production" else "test-data"
+    return "enabled"
+
+
+def _resolve_ai_status(
+    settings: Settings,
+    enrichment: AIEnrichmentResult,
+    analyses: list[StructuredAnalysis],
+    *,
+    has_bundles: bool,
+    provider_available: bool,
+) -> str:
+    legacy_status = analyses[0].status if analyses else None
+    if not settings.effective_ai_enabled:
+        return "disabled"
+    provider = settings.llm_provider.casefold().strip()
+    if provider == "fake" and settings.app_env == "production":
+        return "disabled"
+    if provider == "fake" and legacy_status == "test-data":
+        return "test-data"
+    if not has_bundles:
+        return "enabled"
+    if not provider_available:
+        return "failed"
+
+    usage = enrichment.usage
+    if usage.requests_succeeded:
+        if usage.requests_failed or usage.targets_skipped_due_to_budget:
+            return "partial"
+        return "enabled"
+    if usage.requests_failed:
+        return "failed"
+    if usage.targets_skipped_due_to_budget or usage.budget_exhausted:
+        return "partial"
+    return "failed"
+
+
 def run_daily(settings: Settings, now: datetime | None = None) -> PipelineResult:
     timer_started = time.perf_counter()
     started_at = (now or datetime.now(UTC)).astimezone(UTC)
@@ -50,7 +96,7 @@ def run_daily(settings: Settings, now: datetime | None = None) -> PipelineResult
     report_date = business_now.date().isoformat()
     universe = load_universe(settings)
     llm = build_llm_provider(settings)
-    ai_status = llm.name
+    ai_status = _initial_ai_status(settings)
     ai_profile = f"ai-{settings.llm_provider}" if settings.ai_enabled else "no-ai"
     run_key = f"daily:{report_date}:{settings.data_mode}:{ai_profile}:v0.1"
     run_id = stable_id("run", run_key)
@@ -300,6 +346,13 @@ def _run_started_pipeline(
                     warnings=[f"{type(exc).__name__}: {exc}"],
                 )
             )
+    ai_status = _resolve_ai_status(
+        settings,
+        ai_enrichment,
+        analyses,
+        has_bundles=bool(explanation_bundles),
+        provider_available=generation_provider is not None,
+    )
 
     store.save_documents(run_id, documents)
     store.save_evidence(run_id, evidence)
@@ -349,7 +402,7 @@ def _run_started_pipeline(
         run_id=run_id,
         data_mode=settings.data_mode,
         is_demo=is_demo,
-        ai_status=analyses[0].status if analyses else "disabled",
+        ai_status=ai_status,
         ai_test_data=ai_test_data,
         quality=quality,
         provider_statuses=provider_statuses,
