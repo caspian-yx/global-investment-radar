@@ -580,7 +580,12 @@ class RadarStore:
                 )
                 if not older_exists:
                     continue
-                event, claim, evidence = build_macro_event(item, now)
+                if item.release_at is None or item.source_document_id is None:
+                    continue
+                event_bundle = build_macro_event(item, now)
+                if event_bundle is None:
+                    continue
+                event, claim, evidence = event_bundle
                 event_exists = connection.execute(
                     select(events_table.c.id).where(events_table.c.id == event.id)
                 ).first()

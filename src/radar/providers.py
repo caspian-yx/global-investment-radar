@@ -357,21 +357,20 @@ class BLSMacroProvider:
             value = float(latest["value"])
             previous_value = float(previous["value"]) if previous else None
             change = round(value - previous_value, 3) if previous_value is not None else None
-            observations.append(
-                MacroObservation(
-                    id=stable_id("macro", f"BLS|{series_id}|{period}"),
-                    series_id=series_id,
-                    name=name,
-                    period=period,
-                    observed_at=now,
-                    value=value,
-                    previous_value=previous_value,
-                    change=change,
-                    change_label="vs previous month" if change is not None else None,
-                    unit=unit,
-                    provider=self.name,
-                )
+            observation = MacroObservation(
+                id=stable_id("macro", f"BLS|{series_id}|{period}"),
+                series_id=series_id,
+                name=name,
+                period=period,
+                observed_at=now,
+                value=value,
+                previous_value=previous_value,
+                change=change,
+                change_label="vs previous month" if change is not None else None,
+                unit=unit,
+                provider=self.name,
             )
+            observations.append(observation)
         expected = len(self.series)
         if not observations:
             status = ProviderStatus.NO_DATA

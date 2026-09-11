@@ -411,12 +411,16 @@ class MacroObservation(BaseModel):
     name: str
     period: str
     observed_at: datetime
+    release_at: datetime | None = None
     value: float
     previous_value: float | None
     change: float | None
     change_label: str | None
     unit: str
     provider: str
+    source_document_id: str | None = Field(
+        default=None, min_length=1, pattern=r".*\S.*"
+    )
     is_demo: bool = False
 
 

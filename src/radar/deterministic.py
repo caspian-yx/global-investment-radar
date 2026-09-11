@@ -285,11 +285,32 @@ def extract_market_events(
 
 def build_macro_event(
     observation: MacroObservation, now: datetime
-) -> tuple[Event, Claim, Evidence]:
-    """Build a factual event for a period first observed by Radar."""
+) -> tuple[Event, Claim, Evidence] | None:
+    """Build a factual event backed by a trusted release and source document."""
+    release_at = observation.release_at
+    if (
+        release_at is None
+        or release_at.tzinfo is None
+        or release_at.utcoffset() is None
+        or observation.source_document_id is None
+    ):
+        return None
     event_key = f"macro:{observation.series_id}:{observation.period}"
-    observed_at = observation.observed_at.astimezone(UTC)
-    evidence = build_macro_observation_evidence(observation)
+    occurred_at = release_at.astimezone(UTC)
+    observation_evidence = build_macro_observation_evidence(observation)
+    evidence = Evidence(
+        id=stable_id(
+            "evidence",
+            f"{observation.source_document_id}|{content_hash(observation_evidence.excerpt)}",
+        ),
+        source_kind=SourceKind.DOCUMENT,
+        source_id=observation.source_document_id,
+        source_document_id=observation.source_document_id,
+        locator={**observation_evidence.locator, "type": "macro_source_document"},
+        excerpt=observation_evidence.excerpt,
+        checksum=observation_evidence.checksum,
+        quality_score=observation_evidence.quality_score,
+    )
     evidence_id = evidence.id
     excerpt = evidence.excerpt
     claim_id = stable_id("claim", event_key)
@@ -299,20 +320,20 @@ def build_macro_event(
         text=excerpt,
         evidence_ids=[evidence_id],
         confidence=0.99,
-        as_of=observed_at,
+        as_of=occurred_at,
     )
     event = Event(
         id=stable_id("event", event_key),
         event_key=event_key,
         event_type=EventType.MACRO,
         title=f"New period first observed by Radar: {observation.name} {observation.period}",
-        occurred_at=observed_at,
+        occurred_at=occurred_at,
         first_seen_at=now.astimezone(UTC),
         last_seen_at=now.astimezone(UTC),
         entity_ids=[observation.series_id],
         claim_ids=[claim_id],
         evidence_ids=[evidence_id],
-        source_document_ids=[],
+        source_document_ids=[observation.source_document_id],
         importance_score=58.0,
         importance_components={
             "source_quality": 30.0,

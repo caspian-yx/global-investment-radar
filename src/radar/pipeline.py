@@ -38,8 +38,13 @@ from radar.explanation import (
 )
 from radar.ingestion import collect_intelligence_providers
 from radar.llm import AnalysisProvider, LLMError, build_generation_provider, build_llm_provider
+from radar.macro import build_macro_source_document
 from radar.providers import build_providers
-from radar.relevance import EventTargetDecision, build_event_target_relationships
+from radar.relevance import (
+    EventTargetDecision,
+    build_event_target_relationships,
+    summarize_relationships,
+)
 from radar.report import HtmlReportRenderer, report_context
 from radar.storage import RadarStore
 
@@ -202,7 +207,13 @@ def _run_started_pipeline(
     documents = _flatten(batch.documents for batch in batches)
     markets = _flatten(batch.markets for batch in batches)
     macro = _flatten(batch.macro for batch in batches)
-    clusters = cluster_documents(documents)
+    macro_source_document_ids = {
+        item.source_document_id for item in macro if item.source_document_id is not None
+    }
+    official_documents = [
+        item for item in documents if item.id not in macro_source_document_ids
+    ]
+    clusters = cluster_documents(official_documents)
     official_events, official_claims, official_evidence = extract_events(
         clusters, universe["entities"], started_at
     )
@@ -213,6 +224,12 @@ def _run_started_pipeline(
         store.save_macro_with_first_observed_events(run_id, macro, started_at)
     )
     canonical_macro = store.load_canonical_macro_observations(macro)
+    macro_source_documents = [
+        document
+        for item in canonical_macro
+        if (document := build_macro_source_document(item)) is not None
+    ]
+    documents = unique_by_id([*documents, *macro_source_documents])
     events = sorted(
         [*official_events, *market_events, *macro_events],
         key=lambda item: item.importance_score,
@@ -235,11 +252,23 @@ def _run_started_pipeline(
             *macro_backdrop_evidence,
         ]
     )
+    candidate_events = unique_by_id([*official_events, *macro_events])
     relationships = build_event_target_relationships(
         target_events=market_events,
-        candidate_events=official_events,
+        candidate_events=candidate_events,
         documents=documents,
         assets=universe["assets"],
+        entity_config=universe.get("entities", []),
+    )
+    relationship_summary = summarize_relationships(relationships)
+    logger.info(
+        "C6 relationships evaluated=%d allowed=%d rejected=%d "
+        "rejected_by_reason=%s allowed_by_channel=%s",
+        relationship_summary["evaluated"],
+        relationship_summary["allowed"],
+        relationship_summary["rejected"],
+        relationship_summary["rejected_by_reason"],
+        relationship_summary["allowed_by_channel"],
     )
     allowed_event_ids_by_target: dict[str, set[str]] = {
         target.id: set() for target in market_events
@@ -249,14 +278,14 @@ def _run_started_pipeline(
             allowed_event_ids_by_target[relationship.target_event_id].add(
                 relationship.candidate_event_id
             )
-    official_events_by_id = {item.id: item for item in official_events}
+    candidate_events_by_id = {item.id: item for item in candidate_events}
     driver_candidates = []
     driver_claims = []
     for target in sorted(market_events, key=lambda item: item.id):
         target_driver_candidates, target_driver_claims = build_driver_candidates(
             target_events=[target],
             candidate_events=[
-                official_events_by_id[event_id]
+                    candidate_events_by_id[event_id]
                 for event_id in sorted(allowed_event_ids_by_target[target.id])
             ],
             evidence=evidence,

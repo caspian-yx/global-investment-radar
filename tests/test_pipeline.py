@@ -24,6 +24,7 @@ from radar.domain import (
     stable_id,
 )
 from radar.llm import DisabledLLMProvider, LLMConfigurationError, LLMResponse
+from radar.macro import build_macro_source_document
 from radar.pipeline import _resolve_ai_status, run_daily
 from radar.providers import DemoProvider, make_document
 from radar.report import HtmlReportRenderer
@@ -635,6 +636,7 @@ def test_pipeline_combines_official_market_and_macro_events_before_optional_llm(
         name="U.S. CPI All Urban Consumers",
         period="2026-08",
         observed_at=now,
+        release_at=now - timedelta(hours=12),
         value=324.5,
         previous_value=324.0,
         change=0.5,
@@ -642,6 +644,9 @@ def test_pipeline_combines_official_market_and_macro_events_before_optional_llm(
         unit="index",
         provider="bls-public-api",
     )
+    macro_source = build_macro_source_document(macro)
+    assert macro_source is not None
+    macro = macro.model_copy(update={"source_document_id": macro_source.id})
     batch = CollectionBatch(
         provider="combined-fixture",
         documents=[document],
@@ -679,6 +684,100 @@ def test_pipeline_combines_official_market_and_macro_events_before_optional_llm(
     assert "first observed by Radar" in html
     assert 'href="test-market"' not in html
     assert 'href="bls-public-api"' not in html
+
+
+def test_pipeline_routes_linked_macro_event_through_c6_and_unchanged_c2(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    now = datetime(2026, 9, 10, 21, tzinfo=UTC)
+    database_url = f"sqlite:///{(tmp_path / 'macro-driver.db').as_posix()}"
+    store = RadarStore(database_url)
+    store.initialize()
+    store.save_macro_with_first_observed_events(
+        "bootstrap",
+        [
+            MacroObservation(
+                id=stable_id("macro", "BLS|CUUR0000SA0|2026-07"),
+                series_id="CUUR0000SA0",
+                name="U.S. CPI All Urban Consumers",
+                period="2026-07",
+                observed_at=now - timedelta(days=40),
+                value=324,
+                previous_value=323.5,
+                change=0.5,
+                change_label="vs previous month",
+                unit="index",
+                provider="bls-public-api",
+            )
+        ],
+        now - timedelta(days=40),
+    )
+    macro = MacroObservation(
+        id=stable_id("macro", "BLS|CUUR0000SA0|2026-08"),
+        series_id="CUUR0000SA0",
+        name="U.S. CPI All Urban Consumers",
+        period="2026-08",
+        observed_at=datetime(2026, 9, 9, 12, 30, tzinfo=UTC),
+        release_at=datetime(2026, 9, 9, 11, 30, tzinfo=UTC),
+        value=324.5,
+        previous_value=324,
+        change=0.5,
+        change_label="vs previous month",
+        unit="index",
+        provider="bls-public-api",
+    )
+    macro_source = build_macro_source_document(macro)
+    assert macro_source is not None
+    macro = macro.model_copy(update={"source_document_id": macro_source.id})
+    market = MarketObservation(
+        id=stable_id("market", "macro-driver|^GSPC|2026-09-10"),
+        symbol="^GSPC",
+        name="S&P 500",
+        region="US",
+        observed_at=datetime(2026, 9, 10, 20, tzinfo=UTC),
+        close=102,
+        previous_close=100,
+        change_pct=2,
+        currency="USD",
+        provider="test-market",
+    )
+    batch = CollectionBatch(
+        provider="macro-driver-fixture",
+        markets=[market],
+        macro=[macro],
+        diagnostics={"market_items_expected": 1, "market_items_collected": 1},
+    )
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers", lambda settings, universe: [StaticProvider(batch)]
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="live",
+        database_url=database_url,
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=False,
+        email_mode="disabled",
+    )
+    caplog.set_level("INFO", logger="radar.pipeline")
+
+    result = run_daily(settings, now=now)
+
+    assert result.documents == 1
+    assert result.official_events == 0
+    assert result.macro_events == 1
+    assert result.driver_candidates == 1
+    assert RadarStore(database_url).table_count(source_documents) == 1
+    driver = RadarStore(database_url).load_driver_candidates_for_target(
+        stable_id("event", f"market:^GSPC:{market.observed_at.isoformat()}")
+    )[0]
+    assert driver.candidate_event_id == stable_id(
+        "event", "macro:CUUR0000SA0:2026-08"
+    )
+    assert (
+        "C6 relationships evaluated=1 allowed=1 rejected=0 "
+        "rejected_by_reason={} allowed_by_channel={'MACROECONOMIC_RELEASE': 1}"
+        in caplog.text
+    )
 
 
 def test_quiet_day_with_zero_events_is_a_valid_report(tmp_path, monkeypatch) -> None:

@@ -404,3 +404,45 @@ def test_bls_successful_response_without_rows_is_no_data(monkeypatch) -> None:
     assert batch.macro == []
     assert batch.diagnostics["macro_series_expected"] == 2
     assert batch.diagnostics["macro_series_collected"] == 0
+
+
+def test_bls_preserves_unknown_release_time_without_source_document(monkeypatch) -> None:
+    request = httpx.Request("POST", BLSMacroProvider.endpoint)
+    response = httpx.Response(
+        200,
+        json={
+            "status": "REQUEST_SUCCEEDED",
+            "Results": {
+                "series": [
+                    {
+                        "seriesID": "CUUR0000SA0",
+                        "data": [
+                            {"year": "2026", "period": "M08", "value": "324.5"},
+                            {"year": "2026", "period": "M07", "value": "324.0"},
+                        ],
+                    },
+                    {
+                        "seriesID": "LNS14000000",
+                        "data": [
+                            {"year": "2026", "period": "M08", "value": "4.2"},
+                            {"year": "2026", "period": "M07", "value": "4.1"},
+                        ],
+                    },
+                ]
+            },
+        },
+        request=request,
+    )
+    monkeypatch.setattr("radar.providers.httpx.post", lambda *args, **kwargs: response)
+
+    first = BLSMacroProvider().collect(datetime(2026, 9, 8, tzinfo=UTC))
+    second = BLSMacroProvider().collect(datetime(2026, 9, 9, tzinfo=UTC))
+
+    assert first.documents == second.documents == []
+    assert all(item.source_document_id is None for item in first.macro)
+    assert all(item.release_at is None for item in first.macro)
+    assert all(item.observed_at == first.collected_at for item in first.macro)
+    assert all(item.model_dump()["release_at"] is None for item in first.macro)
+    assert [item.source_document_id for item in second.macro] == [
+        item.source_document_id for item in first.macro
+    ]

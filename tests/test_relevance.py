@@ -15,10 +15,17 @@ from radar.domain import (
 from radar.explanation import build_driver_candidates, build_explanation_bundles
 from radar.relevance import (
     RELATIONSHIP_RULE_VERSION,
+    EventScope,
     EventTargetDecision,
+    MacroDomain,
+    PolicyAuthority,
     RelationshipReason,
+    TargetRiskRole,
     TransmissionChannel,
+    build_event_semantic_profile,
     build_event_target_relationships,
+    build_target_semantic_profile,
+    summarize_relationships,
 )
 
 TARGET_AT = datetime(2026, 9, 10, 20, tzinfo=UTC)
@@ -241,6 +248,102 @@ def test_sec_local_ponzi_is_rejected_for_hang_seng_tech_regardless_of_importance
     assert relationship.rule_version == RELATIONSHIP_RULE_VERSION
 
 
+def test_event_and_target_profiles_are_typed_and_deterministic() -> None:
+    target, _ = _target("^VIX", event_type=EventType.RISK)
+    source = _document(
+        "fed-profile",
+        title="Federal Reserve FOMC rate decision",
+        content="The Federal Reserve maintained rates amid inflation and employment risks.",
+        publisher="Federal Reserve",
+        region="US",
+    )
+    second_source = _document(
+        "fed-profile-2",
+        title="Federal Reserve statement on rates",
+        content="The policy committee discussed rates.",
+        publisher="Federal Reserve",
+        region="US",
+    )
+    candidate, _ = _candidate(
+        "event-fed-profile", source, event_type=EventType.POLICY, entity_ids=["federal-reserve"]
+    )
+    event_profile = build_event_semantic_profile(
+        candidate,
+        [source, second_source],
+        entity_config=[{"id": "federal-reserve", "name": "Federal Reserve", "aliases": ["fed"]}],
+    )
+    target_profile = build_target_semantic_profile(
+        target, next(item for item in ASSETS if item["symbol"] == "^VIX")
+    )
+    assert event_profile.event_scope is EventScope.REGIONAL
+    assert event_profile.policy_authority is PolicyAuthority.FEDERAL_RESERVE
+    assert event_profile.macro_domain is None
+    assert event_profile.regions == ("US",)
+    assert target_profile.risk_role is TargetRiskRole.BROAD_RISK
+    assert target_profile.asset_class.value == "EQUITY_INDEX"
+    assert build_event_semantic_profile(
+        candidate, list(reversed([source, second_source])), entity_config=[]
+    ) == event_profile
+
+
+def test_macro_profile_requires_explicit_domain_and_observability_is_aggregate() -> None:
+    target, _ = _target("^GSPC")
+    source = _document(
+        "cpi-profile",
+        title="US CPI inflation release",
+        content="Consumer prices increased in the latest inflation release.",
+        publisher="BLS",
+        region="US",
+    )
+    candidate, _ = _candidate("event-cpi-profile", source, event_type=EventType.MACRO)
+    profile = build_event_semantic_profile(candidate, [source])
+    assert profile.macro_domain is MacroDomain.INFLATION
+    relationships = build_event_target_relationships(
+        target_events=[target], candidate_events=[candidate], documents=[source], assets=ASSETS
+    )
+    summary = summarize_relationships(relationships)
+    assert summary == {
+        "evaluated": 1,
+        "allowed": 1,
+        "rejected": 0,
+        "rejected_by_reason": {},
+        "allowed_by_channel": {TransmissionChannel.MACROECONOMIC_RELEASE.value: 1},
+    }
+
+
+def test_sector_theme_requires_explicit_matching_semantics() -> None:
+    target, _ = _target("^GSPC")
+    themed_asset = {
+        **next(item for item in ASSETS if item["symbol"] == "^GSPC"),
+        "sector_themes": ["SEMICONDUCTORS"],
+    }
+    source = _document(
+        "chip-earnings",
+        title="Semiconductor company earnings beat expectations",
+        content="A chipmaker reported earnings and stronger demand.",
+        publisher="Company",
+        region="US",
+    )
+    candidate, _ = _candidate(
+        "event-chip-earnings", source, event_type=EventType.EARNINGS, entity_ids=["semiconductors"]
+    )
+    allowed = build_event_target_relationships(
+        target_events=[target], candidate_events=[candidate], documents=[source],
+        assets=[themed_asset],
+        entity_config=[
+            {"id": "semiconductors", "name": "Semiconductors", "aliases": ["chip"],
+             "sector_themes": ["SEMICONDUCTORS"]}
+        ],
+    )[0]
+    assert allowed.decision is EventTargetDecision.ALLOW
+    assert allowed.transmission_channel is TransmissionChannel.SECTOR_THEME
+
+    generic = build_event_target_relationships(
+        target_events=[target], candidate_events=[candidate], documents=[source], assets=ASSETS
+    )[0]
+    assert generic.decision is EventTargetDecision.REJECT
+
+
 def test_compatible_ecb_fed_and_fed_vix_policy_relationships_are_allowed() -> None:
     cases = [
         (
@@ -447,6 +550,81 @@ def test_same_region_official_macro_release_is_allowed_for_matching_macro_topic(
     assert relationship.decision is EventTargetDecision.ALLOW
     assert relationship.transmission_channel is TransmissionChannel.MACROECONOMIC_RELEASE
     assert relationship.reason_codes == (RelationshipReason.MACRO_REGION_TOPIC_MATCH,)
+
+
+def test_us_employment_release_is_allowed_for_compatible_broad_target() -> None:
+    target, _ = _target("^GSPC")
+    source = _document(
+        "us-employment-positive",
+        title="US employment report",
+        content="Employment and payrolls increased in the latest official release.",
+        publisher="U.S. Statistics Office",
+        region="US",
+    )
+    candidate, _ = _candidate(
+        "event-us-employment-positive", source, event_type=EventType.MACRO
+    )
+
+    relationship = _relationship(target, candidate, [source])
+
+    assert relationship.decision is EventTargetDecision.ALLOW
+    assert relationship.transmission_channel is TransmissionChannel.MACROECONOMIC_RELEASE
+
+
+def test_macro_release_does_not_authorize_unrelated_company_or_foreign_target() -> None:
+    source = _document(
+        "us-employment",
+        title="US employment report strengthens",
+        content="Employment and payrolls increased in the latest release.",
+        publisher="U.S. Statistics Office",
+        region="US",
+    )
+    candidate, _ = _candidate("event-us-employment", source, event_type=EventType.MACRO)
+    company_target, _ = _target("AMZN")
+    foreign_target, _ = _target("^STOXX50E")
+    relationships = build_event_target_relationships(
+        target_events=[company_target, foreign_target],
+        candidate_events=[candidate],
+        documents=[source],
+        assets=ASSETS,
+    )
+    assert [item.decision for item in relationships] == [
+        EventTargetDecision.REJECT,
+        EventTargetDecision.REJECT,
+    ]
+
+
+def test_macro_release_does_not_authorize_unsupported_commodity() -> None:
+    source = _document(
+        "us-cpi-commodity",
+        title="US CPI inflation release",
+        content="Consumer price inflation increased in the latest release.",
+        publisher="U.S. Statistics Office",
+        region="US",
+    )
+    candidate, _ = _candidate(
+        "event-us-cpi-commodity", source, event_type=EventType.MACRO
+    )
+    target, _ = _target("CL=F")
+    asset = {
+        "symbol": "CL=F",
+        "name": "WTI Crude Futures",
+        "region": "US",
+        "asset_class": "COMMODITY",
+        "session_kind": "NEAR_24_HOUR",
+        "timezone": "UTC",
+        "topics": ["INFLATION", "ENERGY", "US"],
+    }
+
+    relationship = build_event_target_relationships(
+        target_events=[target],
+        candidate_events=[candidate],
+        documents=[source],
+        assets=[asset],
+    )[0]
+
+    assert relationship.decision is EventTargetDecision.REJECT
+    assert relationship.transmission_channel is None
 
 
 def test_small_local_event_is_rejected_for_unrelated_foreign_market() -> None:
