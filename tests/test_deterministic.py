@@ -6,6 +6,7 @@ import pytest
 
 from radar.deterministic import (
     assess_report_quality,
+    build_deterministic_summary,
     canonicalize_url,
     cluster_documents,
     extract_events,
@@ -13,6 +14,7 @@ from radar.deterministic import (
 )
 from radar.domain import (
     ClaimType,
+    MacroObservation,
     ProviderRunStatus,
     ProviderStatus,
     ReportQualityStatus,
@@ -24,6 +26,26 @@ from radar.providers import make_document
 
 def test_canonicalize_url_removes_tracking() -> None:
     assert canonicalize_url("https://EXAMPLE.com/a?utm_source=x&id=7#top") == "https://example.com/a?id=7"
+
+
+def test_macro_summary_separates_value_from_unit() -> None:
+    observation = MacroObservation(
+        id="macro-cpi",
+        series_id="CPIAUCSL",
+        name="CPI",
+        period="2026-08",
+        observed_at=datetime(2026, 9, 10, tzinfo=UTC),
+        value=333.918,
+        previous_value=None,
+        change=None,
+        change_label=None,
+        unit="index",
+        provider="fixture",
+    )
+
+    summary = build_deterministic_summary([], [observation], [])
+
+    assert summary.macro_headlines == ["CPI: 333.918 index"]
 
 
 def test_near_duplicate_titles_cluster() -> None:

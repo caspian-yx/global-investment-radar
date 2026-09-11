@@ -16,17 +16,15 @@ from radar.deterministic import (
     extract_market_events,
 )
 from radar.domain import (
-    CollectionBatch,
     EvidencePack,
     PipelineResult,
     ProviderRunStatus,
     ProviderStatus,
     ReportQualityStatus,
-    StructuredExplanation,
     stable_id,
 )
 from radar.email import build_email_sender
-from radar.enrichment import generate_structured_explanations
+from radar.enrichment import run_structured_explanation_enrichment
 from radar.explanation import (
     build_cross_asset_context,
     build_driver_candidates,
@@ -36,6 +34,7 @@ from radar.explanation import (
     unique_by_id,
     validate_driver_candidate_bundle,
 )
+from radar.ingestion import collect_intelligence_providers
 from radar.llm import AnalysisProvider, LLMError, build_generation_provider, build_llm_provider
 from radar.providers import build_providers
 from radar.report import HtmlReportRenderer, report_context
@@ -126,42 +125,32 @@ def _run_started_pipeline(
     store: RadarStore,
     timer_started: float,
 ) -> PipelineResult:
-    batches: list[CollectionBatch] = []
+    batches = collect_intelligence_providers(
+        build_providers(settings, universe),
+        business_now,
+    )
     provider_statuses: list[ProviderRunStatus] = []
-    for provider in build_providers(settings, universe):
-        logger.info("Provider started provider=%s", provider.name)
-        try:
-            batch = provider.collect(business_now)
-            batches.append(batch)
-            provider_statuses.append(
-                ProviderRunStatus(
-                    provider=provider.name,
-                    status=batch.status,
-                    item_count=len(batch.documents) + len(batch.markets) + len(batch.macro),
-                    warnings=batch.warnings,
-                    diagnostics=batch.diagnostics,
-                )
+    for batch in batches:
+        provider_statuses.append(
+            ProviderRunStatus(
+                provider=batch.provider,
+                status=batch.status,
+                item_count=len(batch.documents) + len(batch.markets) + len(batch.macro),
+                warnings=batch.warnings,
+                diagnostics=batch.diagnostics,
+                error_type=batch.error_type,
             )
-            logger.info(
-                "Provider finished provider=%s status=%s documents=%d markets=%d "
-                "macro=%d diagnostics=%s",
-                provider.name,
-                batch.status.value,
-                len(batch.documents),
-                len(batch.markets),
-                len(batch.macro),
-                batch.diagnostics,
-            )
-        except Exception as exc:  # provider isolation is a pipeline requirement
-            logger.exception("Provider failed", extra={"provider": provider.name})
-            provider_statuses.append(
-                ProviderRunStatus(
-                    provider=provider.name,
-                    status=ProviderStatus.FAILED,
-                    item_count=0,
-                    warnings=[f"{type(exc).__name__}: {exc}"],
-                )
-            )
+        )
+        logger.info(
+            "Provider finished provider=%s status=%s documents=%d markets=%d "
+            "macro=%d diagnostics=%s",
+            batch.provider,
+            batch.status.value,
+            len(batch.documents),
+            len(batch.markets),
+            len(batch.macro),
+            batch.diagnostics,
+        )
 
     documents = _flatten(batch.documents for batch in batches)
     markets = _flatten(batch.markets for batch in batches)
@@ -231,7 +220,7 @@ def _run_started_pipeline(
         for bundle in explanation_bundles
         for candidate in bundle.driver_candidates
     ]
-    structured_explanations: dict[str, StructuredExplanation] = {}
+    generation_provider = None
     if settings.effective_ai_enabled and explanation_bundles:
         try:
             generation_provider = build_generation_provider(settings)
@@ -240,11 +229,28 @@ def _run_started_pipeline(
                 "Optional structured explanation provider unavailable error_type=%s",
                 type(exc).__name__,
             )
-        else:
-            structured_explanations = generate_structured_explanations(
-                explanation_bundles,
-                generation_provider,
-            )
+    ai_enrichment = run_structured_explanation_enrichment(
+        explanation_bundles,
+        generation_provider,
+        max_requests=settings.ai_max_requests_per_run,
+        max_input_tokens=settings.ai_max_input_tokens_per_run,
+        max_output_tokens=settings.ai_max_output_tokens_per_run,
+    )
+    structured_explanations = ai_enrichment.explanations
+    logger.info(
+        "AI enrichment bundles=%d attempted=%d succeeded=%d failed=%d "
+        "skipped_budget=%d input_tokens=%d output_tokens=%d total_tokens=%d "
+        "budget_exhausted=%s",
+        len(explanation_bundles),
+        ai_enrichment.usage.requests_attempted,
+        ai_enrichment.usage.requests_succeeded,
+        ai_enrichment.usage.requests_failed,
+        ai_enrichment.usage.targets_skipped_due_to_budget,
+        ai_enrichment.usage.input_tokens,
+        ai_enrichment.usage.output_tokens,
+        ai_enrichment.usage.total_tokens,
+        str(ai_enrichment.usage.budget_exhausted).lower(),
+    )
     summary = build_deterministic_summary(markets, macro, events)
     logger.info(
         "Collection complete documents=%d markets=%d macro=%d clusters=%d "

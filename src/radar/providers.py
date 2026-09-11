@@ -6,10 +6,11 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from pydantic import JsonValue
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from radar.config import Settings
@@ -18,11 +19,13 @@ from radar.domain import (
     MacroObservation,
     MarketObservation,
     ProviderStatus,
+    SourceCategory,
     SourceDocument,
+    SourceRole,
     SourceTier,
-    content_hash,
     stable_id,
 )
+from radar.ingestion import IntelligenceProvider, build_source_document
 
 RSS_DIAGNOSTIC_KEYS = (
     "total_entries",
@@ -42,12 +45,6 @@ class RSSParseResult:
     )
 
 
-class DataProvider(Protocol):
-    name: str
-
-    def collect(self, now: datetime) -> CollectionBatch: ...
-
-
 def make_document(
     *,
     provider: str,
@@ -57,21 +54,30 @@ def make_document(
     title: str,
     content: str,
     published_at: datetime,
+    collected_at: datetime | None = None,
+    trusted_provider_native_id: str | None = None,
+    source_category: SourceCategory = SourceCategory.OTHER,
+    source_role: SourceRole = SourceRole.SECONDARY,
+    language: str = "en",
+    region: str | None = None,
+    provider_metadata: dict[str, JsonValue] | None = None,
     is_demo: bool = False,
 ) -> SourceDocument:
-    normalized = f"{title.strip()}\n{content.strip()}"
-    digest = content_hash(normalized)
-    return SourceDocument(
-        id=stable_id("source", f"{provider}|{url}|{digest}"),
+    return build_source_document(
         provider=provider,
-        source_tier=tier,
+        trusted_provider_native_id=trusted_provider_native_id,
+        source_category=source_category,
+        source_role=source_role,
+        tier=tier,
         publisher=publisher,
-        canonical_url=url,
-        title=title.strip(),
-        content=content.strip(),
-        published_at=published_at.astimezone(UTC),
-        retrieved_at=datetime.now(UTC),
-        content_hash=digest,
+        url=url,
+        title=title,
+        content=content,
+        language=language,
+        region=region,
+        published_at=published_at,
+        collected_at=collected_at or datetime.now(UTC),
+        provider_metadata=provider_metadata,
         is_demo=is_demo,
     )
 
@@ -127,6 +133,9 @@ class DemoProvider:
                 ),
                 content="Test fixture: the policy committee kept its target rate unchanged.",
                 published_at=observed - timedelta(hours=5),
+                collected_at=now,
+                source_category=SourceCategory.OFFICIAL,
+                source_role=SourceRole.PRIMARY,
                 is_demo=True,
             ),
             make_document(
@@ -137,6 +146,9 @@ class DemoProvider:
                 title="Central bank keeps policy rate unchanged, retains data dependent guidance",
                 content="Test fixture: a second source reported the same policy decision.",
                 published_at=observed - timedelta(hours=4, minutes=50),
+                collected_at=now,
+                source_category=SourceCategory.PROFESSIONAL_NEWS,
+                source_role=SourceRole.SECONDARY,
                 is_demo=True,
             ),
             make_document(
@@ -150,6 +162,9 @@ class DemoProvider:
                     "accelerator demand."
                 ),
                 published_at=observed - timedelta(hours=8),
+                collected_at=now,
+                source_category=SourceCategory.COMPANY_PRIMARY,
+                source_role=SourceRole.PRIMARY,
                 is_demo=True,
             ),
             make_document(
@@ -162,6 +177,9 @@ class DemoProvider:
                     "Test fixture: headline inflation slowed, but services prices remained firm."
                 ),
                 published_at=observed - timedelta(hours=12),
+                collected_at=now,
+                source_category=SourceCategory.OFFICIAL,
+                source_role=SourceRole.PRIMARY,
                 is_demo=True,
             ),
             make_document(
@@ -172,6 +190,9 @@ class DemoProvider:
                 title="Oil supply forecast rises as demand estimate is revised lower",
                 content="Test fixture: the balance points to looser near-term oil fundamentals.",
                 published_at=observed - timedelta(hours=16),
+                collected_at=now,
+                source_category=SourceCategory.OTHER,
+                source_role=SourceRole.PRIMARY,
                 is_demo=True,
             ),
         ]
@@ -187,6 +208,7 @@ class DemoProvider:
                 "market_items_expected": len(market_specs),
                 "market_items_collected": len(markets),
             },
+            collected_at=now,
             is_demo=True,
         )
 
@@ -253,6 +275,7 @@ class YahooChartProvider:
                 "market_items_collected": len(observations),
                 "market_items_failed": len(self.assets) - len(observations),
             },
+            collected_at=now,
         )
 
     @retry(
@@ -367,6 +390,7 @@ class BLSMacroProvider:
                 "macro_series_expected": expected,
                 "macro_series_collected": len(observations),
             },
+            collected_at=now,
         )
 
 
@@ -374,7 +398,7 @@ class OfficialRSSProvider:
     name = "official-rss"
 
     def __init__(
-        self, feeds: list[dict[str, str]], lookback_hours: int, timeout: float = 15
+        self, feeds: list[dict[str, Any]], lookback_hours: int, timeout: float = 15
     ) -> None:
         self.feeds = feeds
         self.lookback = timedelta(hours=lookback_hours)
@@ -420,12 +444,13 @@ class OfficialRSSProvider:
             documents=documents,
             warnings=warnings,
             diagnostics=diagnostics,
+            collected_at=now,
         )
 
     def _parse(
         self,
         raw_xml: str,
-        feed: dict[str, str],
+        feed: dict[str, Any],
         now: datetime,
         lookback: timedelta,
     ) -> RSSParseResult:
@@ -465,6 +490,12 @@ class OfficialRSSProvider:
                 result.diagnostics["duplicate_items"] += 1
                 continue
             seen_links.add(url)
+            native_id = (
+                self._child_text(item, "guid", "id")
+                if feed.get("native_ids_immutable") is True
+                else None
+            )
+            feed_url = feed.get("url")
             result.documents.append(
                 make_document(
                     provider=self.name,
@@ -474,6 +505,18 @@ class OfficialRSSProvider:
                     title=title,
                     content=clean or title,
                     published_at=published,
+                    collected_at=now,
+                    trusted_provider_native_id=native_id,
+                    source_category=SourceCategory(
+                        feed.get("source_category", SourceCategory.OTHER.value)
+                    ),
+                    source_role=SourceRole(
+                        feed.get("source_role", SourceRole.SECONDARY.value)
+                    ),
+                    region=feed.get("region"),
+                    provider_metadata=(
+                        {"feed_url": feed_url} if isinstance(feed_url, str) else {}
+                    ),
                 )
             )
         return result
@@ -516,7 +559,9 @@ class OfficialRSSProvider:
         return tag.rsplit("}", 1)[-1]
 
 
-def build_providers(settings: Settings, universe: dict[str, Any]) -> list[DataProvider]:
+def build_providers(
+    settings: Settings, universe: dict[str, Any]
+) -> list[IntelligenceProvider]:
     if settings.data_mode == "demo":
         return [DemoProvider()]
     return [

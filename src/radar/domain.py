@@ -6,7 +6,15 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 ID_NAMESPACE = uuid.UUID("e482538d-22c4-4a71-9713-06e7a4193378")
 
@@ -24,6 +32,21 @@ class SourceTier(StrEnum):
     B = "B"
     C = "C"
     D = "D"
+
+
+class SourceCategory(StrEnum):
+    OFFICIAL = "official"
+    REGULATORY = "regulatory"
+    COMPANY_PRIMARY = "company_primary"
+    PROFESSIONAL_NEWS = "professional_news"
+    AGGREGATOR = "aggregator"
+    COMMUNITY = "community"
+    OTHER = "other"
+
+
+class SourceRole(StrEnum):
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
 
 
 class ClaimType(StrEnum):
@@ -112,18 +135,82 @@ class EventType(StrEnum):
 
 
 class SourceDocument(BaseModel):
-    id: str
-    provider: str
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1, pattern=r".*\S.*")
+    provider: str = Field(min_length=1, pattern=r".*\S.*")
+    provider_native_id: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
+    source_category: SourceCategory = SourceCategory.OTHER
+    source_role: SourceRole = SourceRole.SECONDARY
     source_tier: SourceTier
-    publisher: str
-    canonical_url: str
-    title: str
+    publisher: str = Field(min_length=1, pattern=r".*\S.*")
+    original_url: str = Field(min_length=1, pattern=r".*\S.*")
+    canonical_url: str = Field(min_length=1, pattern=r".*\S.*")
+    title: str = Field(min_length=1, pattern=r".*\S.*")
     content: str
-    language: str = "en"
+    language: str = Field(default="en", min_length=1, pattern=r".*\S.*")
+    region: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
     published_at: datetime
-    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    collected_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        validation_alias=AliasChoices("collected_at", "retrieved_at"),
+    )
+    provider_metadata: dict[str, JsonValue] = Field(default_factory=dict)
     content_hash: str
     is_demo: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_original_url(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "original_url" not in value:
+            value = {**value, "original_url": value.get("canonical_url")}
+        return value
+
+    @field_validator("published_at", "collected_at")
+    @classmethod
+    def normalize_document_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("document timestamps must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def reject_sensitive_metadata(
+        cls, value: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        sensitive_key_fragments = {
+            "apikey",
+            "authorization",
+            "password",
+            "secret",
+            "accesstoken",
+            "refreshtoken",
+        }
+
+        def is_sensitive_key(key: str) -> bool:
+            normalized = "".join(
+                character for character in key.casefold() if character.isalnum()
+            )
+            return any(fragment in normalized for fragment in sensitive_key_fragments)
+
+        def contains_sensitive_key(item: JsonValue) -> bool:
+            if isinstance(item, dict):
+                return any(
+                    is_sensitive_key(key) or contains_sensitive_key(nested)
+                    for key, nested in item.items()
+                )
+            if isinstance(item, list):
+                return any(contains_sensitive_key(nested) for nested in item)
+            return False
+
+        if contains_sensitive_key(value):
+            raise ValueError("provider metadata cannot contain sensitive keys")
+        return value
+
+    @property
+    def retrieved_at(self) -> datetime:
+        """Legacy read compatibility; new code uses collected_at."""
+        return self.collected_at
 
 
 class Evidence(BaseModel):
@@ -284,6 +371,26 @@ class StructuredExplanation(BaseModel):
     generation: GenerationMetadata
 
 
+class AIRunUsage(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    requests_attempted: int = Field(ge=0)
+    requests_succeeded: int = Field(ge=0)
+    requests_failed: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    targets_skipped_due_to_budget: int = Field(ge=0)
+    budget_exhausted: bool
+
+
+class AIEnrichmentResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    explanations: dict[str, StructuredExplanation]
+    usage: AIRunUsage
+
+
 class MarketObservation(BaseModel):
     id: str
     symbol: str
@@ -321,7 +428,18 @@ class CollectionBatch(BaseModel):
     macro: list[MacroObservation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     diagnostics: dict[str, int] = Field(default_factory=dict)
+    error_type: str | None = None
+    collected_at: datetime | None = None
     is_demo: bool = False
+
+    @field_validator("collected_at")
+    @classmethod
+    def normalize_collection_time(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("collection timestamp must be timezone-aware")
+        return value.astimezone(UTC)
 
 
 class ProviderRunStatus(BaseModel):
@@ -330,6 +448,7 @@ class ProviderRunStatus(BaseModel):
     item_count: int
     warnings: list[str] = Field(default_factory=list)
     diagnostics: dict[str, int] = Field(default_factory=dict)
+    error_type: str | None = None
 
 
 class EvidencePack(BaseModel):

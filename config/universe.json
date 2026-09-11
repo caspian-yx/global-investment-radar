@@ -22,12 +22,20 @@
     {
       "url": "https://www.federalreserve.gov/feeds/press_all.xml",
       "publisher": "Federal Reserve",
-      "source_tier": "A"
+      "source_tier": "A",
+      "source_category": "official",
+      "source_role": "primary",
+      "native_ids_immutable": true,
+      "region": "US"
     },
     {
       "url": "https://www.sec.gov/news/pressreleases.rss",
       "publisher": "U.S. SEC",
-      "source_tier": "A"
+      "source_tier": "A",
+      "source_category": "regulatory",
+      "source_role": "primary",
+      "native_ids_immutable": true,
+      "region": "US"
     }
   ],
   "entities": [

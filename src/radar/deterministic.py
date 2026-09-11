@@ -5,7 +5,6 @@ import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from radar.domain import (
     AssetClass,
@@ -31,10 +30,10 @@ from radar.explanation import (
     build_macro_observation_evidence,
     build_market_observation_evidence,
 )
+from radar.ingestion import canonicalize_source_url as canonicalize_url
 
 logger = logging.getLogger(__name__)
 
-TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
 EVENT_RULES: list[tuple[EventType, tuple[str, ...]]] = [
     (EventType.EARNINGS, ("earnings", "revenue", "eps", "margin", "profit")),
     (EventType.GUIDANCE, ("guidance", "outlook", "forecast", "raises", "cuts")),
@@ -73,16 +72,6 @@ HIGH_MARKET_IMPORTANCE = 75.0
 
 def normalize_title(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", title.casefold()).strip()
-
-
-def canonicalize_url(url: str) -> str:
-    parts = urlsplit(url)
-    query = [
-        (key, value)
-        for key, value in parse_qsl(parts.query, keep_blank_values=True)
-        if key.casefold() not in TRACKING_PARAMS and not key.casefold().startswith("utm_")
-    ]
-    return urlunsplit((parts.scheme, parts.netloc.casefold(), parts.path, urlencode(query), ""))
 
 
 def title_similarity(left: str, right: str) -> float:
@@ -194,8 +183,8 @@ def extract_events(
                 event_type=event_type,
                 title=anchor.title,
                 occurred_at=anchor.published_at,
-                first_seen_at=min(d.retrieved_at for d in cluster),
-                last_seen_at=max(d.retrieved_at for d in cluster),
+                first_seen_at=min(d.collected_at for d in cluster),
+                last_seen_at=max(d.collected_at for d in cluster),
                 entity_ids=entities,
                 claim_ids=[claim_id],
                 evidence_ids=evidence_ids,
@@ -358,7 +347,7 @@ def build_deterministic_summary(
             sign = "+" if macro_item.change > 0 else ""
             change = f" ({sign}{macro_item.change:g} {macro_item.change_label})"
         macro_headlines.append(
-            f"{macro_item.name}: {macro_item.value:g}{macro_item.unit}{change}"
+            f"{macro_item.name}: {macro_item.value:g} {macro_item.unit}{change}"
         )
 
     flags: list[str] = []

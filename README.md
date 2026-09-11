@@ -9,6 +9,7 @@ Implemented in this milestone:
 - Provider interface with isolated failures.
 - Reproducible synthetic demo provider with visible safety labels.
 - Optional live zero-key providers: official Federal Reserve/SEC RSS, official BLS API, and an experimental Yahoo chart adapter.
+- Canonical, provider-isolated intelligence ingestion with deterministic source provenance and stable document identity.
 - Deterministic normalization, URL cleanup, near-duplicate clustering, event classification, entity mapping and explainable importance ranking.
 - Evidence-first `SourceDocument → Evidence → Claim → Event` domain model.
 - SQLite development storage and PostgreSQL-compatible SQLAlchemy schema.
@@ -56,6 +57,33 @@ Live mode currently combines:
 
 The market adapter is suitable for zero-cost development, not a production SLA. The HTML report shows the warning. Replace it through the provider interface when a licensed source is selected; no business logic needs to change.
 
+## Intelligence ingestion
+
+External sources enter through the single `IntelligenceProvider.collect(...)` contract. Each
+provider returns a `CollectionBatch`; the orchestration seam isolates failures before passing
+canonical `SourceDocument` records into the existing deterministic evidence, claim and event
+pipeline:
+
+```text
+external source
+  → IntelligenceProvider
+  → CollectionBatch / SourceDocument
+  → deterministic Evidence → Claim → Event processing
+```
+
+`SourceDocument` keeps source category, primary/secondary role and the existing deterministic
+authority tier as canonical provenance. Provider-specific JSON metadata remains opaque and is
+not used for downstream ranking or event semantics. Published and collected timestamps are
+timezone-aware and normalized to UTC; `retrieved_at` is accepted only for legacy input/read
+compatibility, while new serialization uses `collected_at`.
+
+Document identity prefers an explicitly trusted provider-native immutable ID, then provider plus
+conservatively canonicalized URL, then stable provider/publisher/title/publication fields.
+`content_hash` is a version fingerprint and no longer changes identity. This intentionally causes
+a one-time ID transition for documents created under the earlier content-dependent rule; no old
+database migration is performed. Future cursor, `since`, ETag and Last-Modified state can be
+added at the provider boundary without changing deterministic downstream contracts.
+
 ## AI configuration
 
 AI is an optional enhancement layer. The default is deterministic:
@@ -63,10 +91,13 @@ AI is an optional enhancement layer. The default is deterministic:
 ```dotenv
 AI_ENABLED=false
 DAILY_LLM_BUDGET=0
+AI_MAX_REQUESTS_PER_RUN=10
+AI_MAX_INPUT_TOKENS_PER_RUN=
+AI_MAX_OUTPUT_TOKENS_PER_RUN=
 LLM_PROVIDER=disabled
 ```
 
-Either `AI_ENABLED=false` or a zero budget prevents AI calls from the existing analysis pipeline. The DeepSeek transport uses `httpx` directly and is not yet connected to that pipeline. Copy `.env.example` to the ignored `.env`, fill in `DEEPSEEK_API_KEY`, then run the explicit smoke command when a real request is intended:
+Either `AI_ENABLED=false`, a zero daily budget, or any zero run cap prevents AI calls. Request attempts are hard-capped per run; optional input/output token caps stop later calls once trusted provider usage reaches either cap. Copy `.env.example` to the ignored `.env` and fill in `DEEPSEEK_API_KEY` for an explicitly enabled DeepSeek run.
 
 ```bash
 uv run python -m radar.llm_smoke
@@ -74,9 +105,10 @@ uv run python -m radar.llm_smoke
 
 The smoke command is opt-in and makes one small `/chat/completions` request. Ordinary settings construction and deterministic runs do not require a DeepSeek credential. An unknown or unavailable analysis provider continues to fall back to deterministic mode.
 
-The C3.2 structured-explanation layer is intentionally not connected to the production
-pipeline or HTML report. It preserves C2 candidate order and reference closure, accepts only
-strict JSON, and attaches provider/model/usage metadata from the trusted local `LLMResponse`.
+The structured-explanation layer preserves C2 candidate order and reference closure, accepts
+only strict JSON, and attaches provider/model/usage metadata from the trusted local
+`LLMResponse`. AI enrichment is optional and fail-open, so deterministic reporting continues
+when generation fails or a run-level cap is exhausted.
 
 ## Database
 

@@ -103,6 +103,37 @@ def test_no_ai_demo_pipeline_generates_html(tmp_path, monkeypatch) -> None:
     assert transitions == ["completed"]
 
 
+def test_pipeline_uses_one_unified_provider_collection_seam(tmp_path, monkeypatch) -> None:
+    from radar.ingestion import collect_intelligence_providers as collect_real
+
+    seam_calls = 0
+
+    def collect_once(providers, collected_at):
+        nonlocal seam_calls
+        seam_calls += 1
+        return collect_real(providers, collected_at)
+
+    monkeypatch.setattr(
+        "radar.pipeline.collect_intelligence_providers",
+        collect_once,
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="demo",
+        database_url=f"sqlite:///{(tmp_path / 'ingestion-seam.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=False,
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+
+    assert seam_calls == 1
+    assert result.documents == 5
+    assert result.markets == 8
+    assert result.macro == 3
+
+
 def test_pipeline_is_idempotent_for_same_business_day(tmp_path) -> None:
     database = tmp_path / "radar.db"
     settings = Settings(
@@ -230,6 +261,7 @@ def test_provider_failure_remains_isolated(tmp_path, monkeypatch) -> None:
     assert result.events == 5
     assert result.quality_status is ReportQualityStatus.DEGRADED
     assert result.provider_statuses[0].status is ProviderStatus.FAILED
+    assert result.provider_statuses[0].error_type == "OSError"
     assert transitions == ["completed"]
 
 
@@ -714,6 +746,54 @@ def test_structured_ai_configuration_failure_keeps_deterministic_report(
     result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
     assert result.report_path.endswith("global-investment-radar-2026-09-07.html")
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Top Global Events" in html
+    assert "AI explanation" not in html
+
+
+def test_zero_ai_request_budget_uses_single_guarded_seam_and_keeps_report(
+    tmp_path, monkeypatch
+) -> None:
+    from radar.enrichment import run_structured_explanation_enrichment as run_guarded
+
+    seam_calls: list[tuple[int, object | None]] = []
+
+    def capture_guarded(bundles, provider, **limits):
+        materialized = list(bundles)
+        seam_calls.append((len(materialized), provider))
+        return run_guarded(materialized, provider, **limits)
+
+    def unexpected_provider_construction(settings: Settings) -> object:
+        _ = settings
+        raise AssertionError("zero request budget must prevent provider construction")
+
+    monkeypatch.setattr(
+        "radar.pipeline.run_structured_explanation_enrichment",
+        capture_guarded,
+    )
+    monkeypatch.setattr(
+        "radar.pipeline.build_generation_provider",
+        unexpected_provider_construction,
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="demo",
+        database_url=f"sqlite:///{(tmp_path / 'zero-ai-budget.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=True,
+        daily_llm_budget=1,
+        ai_max_requests_per_run=0,
+        llm_provider="deepseek",
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+
+    assert seam_calls == [(1, None)]
+    assert result.events == 5
+    assert result.market_events == 1
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )

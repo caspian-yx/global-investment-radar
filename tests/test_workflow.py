@@ -31,6 +31,7 @@ def test_daily_workflow_has_failure_safe_artifact_constraints() -> None:
     assert "secrets." not in job_environment
     assert 'AI_ENABLED: "true"' in job_environment
     assert 'DAILY_LLM_BUDGET: "1"' in job_environment
+    assert 'AI_MAX_REQUESTS_PER_RUN: "10"' in job_environment
     assert "LLM_PROVIDER: deepseek" in job_environment
     assert 'LLM_MODEL: "deepseek-v4-flash"' in job_environment
     assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in workflow

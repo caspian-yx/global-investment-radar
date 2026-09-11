@@ -116,6 +116,8 @@ def test_report_without_structured_explanation_keeps_deterministic_path() -> Non
     html = HtmlReportRenderer().render(_context())
 
     assert "<html" in html
+    assert "Evidence-first · Optional AI enrichment" in html
+    assert "No-AI capable pipeline" not in html
     assert "Possible drivers" in html
     assert "AI explanation" not in html
 

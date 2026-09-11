@@ -108,7 +108,7 @@ def document(
     content: str = "The Federal Reserve announced a federal funds rate decision.",
     publisher: str = "Federal Reserve",
     source_tier: SourceTier = SourceTier.A,
-    retrieved_at: datetime | None = None,
+    collected_at: datetime | None = None,
     url: str | None = None,
 ) -> SourceDocument:
     return SourceDocument(
@@ -120,7 +120,7 @@ def document(
         title=title,
         content=content,
         published_at=published_at,
-        retrieved_at=retrieved_at or AS_OF,
+        collected_at=collected_at or AS_OF,
         content_hash=content_hash(content),
     )
 
@@ -380,14 +380,14 @@ def test_temporal_monday_extension_only_admits_friday_or_weekend(
     assert classify_temporal_relation(target, candidate, US_ASSET) is want
 
 
-def test_temporal_ignores_retrieval_time_and_handles_dst_by_iana_zone() -> None:
+def test_temporal_ignores_collection_time_and_handles_dst_by_iana_zone() -> None:
     _, _, target = target_bundle()
     source, evidence, candidate = candidate_bundle(
         published_at=datetime(2026, 9, 7, 18, tzinfo=UTC)
     )
-    source = source.model_copy(update={"retrieved_at": TARGET_AT + timedelta(days=30)})
+    source = source.model_copy(update={"collected_at": TARGET_AT + timedelta(days=30)})
 
-    assert source.retrieved_at > target.occurred_at
+    assert source.collected_at > target.occurred_at
     assert classify_temporal_relation(target, candidate, US_ASSET) is (
         DriverTemporalRelation.SAME_WINDOW_AMBIGUOUS
     )
@@ -537,10 +537,10 @@ def test_driver_identity_depends_only_on_semantic_relationship() -> None:
     assert first != driver_candidate_id("target", "candidate", candidate_evidence, "v2")
 
 
-def test_generated_driver_identity_ignores_as_of_retrieval_and_insertion_order() -> None:
+def test_generated_driver_identity_ignores_as_of_collection_and_insertion_order() -> None:
     first, _, bundle = build_one_driver()
     changed_source = bundle["source"].model_copy(  # type: ignore[union-attr]
-        update={"retrieved_at": AS_OF + timedelta(days=10)}
+        update={"collected_at": AS_OF + timedelta(days=10)}
     )
     drivers, _ = build_driver_candidates(
         target_events=[bundle["target"]],  # type: ignore[list-item]

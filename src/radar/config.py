@@ -43,6 +43,21 @@ class Settings(BaseSettings):
     daily_llm_budget: float = Field(
         default=0.0, validation_alias="DAILY_LLM_BUDGET", ge=0
     )
+    ai_max_requests_per_run: int = Field(
+        default=10,
+        validation_alias="AI_MAX_REQUESTS_PER_RUN",
+        ge=0,
+    )
+    ai_max_input_tokens_per_run: int | None = Field(
+        default=None,
+        validation_alias="AI_MAX_INPUT_TOKENS_PER_RUN",
+        ge=0,
+    )
+    ai_max_output_tokens_per_run: int | None = Field(
+        default=None,
+        validation_alias="AI_MAX_OUTPUT_TOKENS_PER_RUN",
+        ge=0,
+    )
     llm_provider: str = Field(default="disabled", validation_alias="LLM_PROVIDER")
     llm_model: str | None = Field(default=None, validation_alias="LLM_MODEL")
     llm_base_url: str | None = Field(default=None, validation_alias="LLM_BASE_URL")
@@ -67,7 +82,14 @@ class Settings(BaseSettings):
     smtp_password: str | None = Field(default=None, validation_alias="SMTP_PASSWORD")
     sec_contact_email: str | None = Field(default=None, validation_alias="SEC_CONTACT_EMAIL")
 
-    @field_validator("llm_model", "llm_base_url", "llm_api_key", mode="before")
+    @field_validator(
+        "ai_max_input_tokens_per_run",
+        "ai_max_output_tokens_per_run",
+        "llm_model",
+        "llm_base_url",
+        "llm_api_key",
+        mode="before",
+    )
     @classmethod
     def empty_string_to_none(cls, value: Any) -> Any:
         return None if value == "" else value
@@ -94,7 +116,13 @@ class Settings(BaseSettings):
 
     @property
     def effective_ai_enabled(self) -> bool:
-        return self.ai_enabled and self.daily_llm_budget > 0
+        return (
+            self.ai_enabled
+            and self.daily_llm_budget > 0
+            and self.ai_max_requests_per_run > 0
+            and self.ai_max_input_tokens_per_run != 0
+            and self.ai_max_output_tokens_per_run != 0
+        )
 
 
 def load_universe(settings: Settings) -> dict[str, Any]:

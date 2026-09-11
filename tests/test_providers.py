@@ -5,19 +5,39 @@ from pathlib import Path
 
 import httpx
 
-from radar.domain import CollectionBatch, MarketObservation, ProviderStatus, stable_id
-from radar.providers import BLSMacroProvider, OfficialRSSProvider, YahooChartProvider
+from radar.domain import (
+    CollectionBatch,
+    MarketObservation,
+    ProviderStatus,
+    SourceCategory,
+    SourceRole,
+    stable_id,
+)
+from radar.providers import (
+    BLSMacroProvider,
+    DemoProvider,
+    OfficialRSSProvider,
+    YahooChartProvider,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FED_FEED = {
     "url": "https://www.federalreserve.gov/feeds/press_all.xml",
     "publisher": "Federal Reserve",
     "source_tier": "A",
+    "source_category": "official",
+    "source_role": "primary",
+    "native_ids_immutable": True,
+    "region": "US",
 }
 SEC_FEED = {
     "url": "https://www.sec.gov/news/pressreleases.rss",
     "publisher": "U.S. SEC",
     "source_tier": "A",
+    "source_category": "regulatory",
+    "source_role": "primary",
+    "native_ids_immutable": True,
+    "region": "US",
 }
 
 
@@ -35,6 +55,15 @@ def test_no_data_is_distinct_from_failed() -> None:
     assert failed.status is ProviderStatus.FAILED
 
 
+def test_demo_provider_reports_canonical_collection_time() -> None:
+    collected_at = datetime(2026, 9, 8, 16, tzinfo=UTC)
+
+    batch = DemoProvider().collect(collected_at)
+
+    assert batch.collected_at == collected_at
+    assert all(document.collected_at == collected_at for document in batch.documents)
+
+
 def test_fed_rss_fixture_parses_with_rfc2822_date() -> None:
     provider = OfficialRSSProvider([], lookback_hours=168)
     result = provider._parse(
@@ -45,7 +74,19 @@ def test_fed_rss_fixture_parses_with_rfc2822_date() -> None:
     )
 
     assert len(result.documents) == 1
-    assert result.documents[0].published_at == datetime(2026, 9, 4, 15, tzinfo=UTC)
+    document = result.documents[0]
+    assert document.published_at == datetime(2026, 9, 4, 15, tzinfo=UTC)
+    assert document.collected_at == datetime(2026, 9, 8, 0, tzinfo=UTC)
+    assert document.provider_native_id == (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "enforcement20260904a.htm"
+    )
+    assert document.source_category is SourceCategory.OFFICIAL
+    assert document.source_role is SourceRole.PRIMARY
+    assert document.region == "US"
+    assert document.provider_metadata == {
+        "feed_url": "https://www.federalreserve.gov/feeds/press_all.xml"
+    }
     assert result.diagnostics == {
         "total_entries": 1,
         "parsed_entries": 1,
@@ -66,7 +107,34 @@ def test_sec_rss_fixture_parses_timezone_offset() -> None:
     )
 
     assert len(result.documents) == 1
-    assert result.documents[0].published_at == datetime(2026, 9, 3, 20, 30, tzinfo=UTC)
+    document = result.documents[0]
+    assert document.published_at == datetime(2026, 9, 3, 20, 30, tzinfo=UTC)
+    assert document.provider_native_id == "06cec215-1a77-4ef5-826d-4a0a23404513"
+    assert document.source_category is SourceCategory.REGULATORY
+    assert document.source_role is SourceRole.PRIMARY
+
+
+def test_rss_native_id_is_used_only_when_feed_declares_it_immutable() -> None:
+    raw = (FIXTURES / "fed_press_feed.xml").read_text(encoding="utf-8")
+    provider = OfficialRSSProvider([], lookback_hours=168)
+    untrusted_feed = {**FED_FEED, "native_ids_immutable": False}
+
+    trusted = provider._parse(
+        raw,
+        FED_FEED,
+        datetime(2026, 9, 8, tzinfo=UTC),
+        timedelta(hours=168),
+    ).documents[0]
+    untrusted = provider._parse(
+        raw,
+        untrusted_feed,
+        datetime(2026, 9, 8, tzinfo=UTC),
+        timedelta(hours=168),
+    ).documents[0]
+
+    assert trusted.provider_native_id is not None
+    assert untrusted.provider_native_id is None
+    assert trusted.id != untrusted.id
 
 
 def test_namespaced_atom_entry_parses_link_summary_and_updated_date() -> None:
@@ -236,6 +304,7 @@ def test_yahoo_complete_collection_is_ok_despite_experimental_warning(monkeypatc
     batch = provider.collect(observed_at)
 
     assert batch.status is ProviderStatus.OK
+    assert batch.collected_at == observed_at
     assert batch.warnings == [
         "Market prices use an experimental zero-key feed with no project-controlled SLA."
     ]
@@ -259,9 +328,11 @@ def test_bls_successful_response_without_rows_is_no_data(monkeypatch) -> None:
     )
     monkeypatch.setattr("radar.providers.httpx.post", lambda *args, **kwargs: response)
 
-    batch = BLSMacroProvider().collect(datetime(2026, 9, 8, tzinfo=UTC))
+    collected_at = datetime(2026, 9, 8, tzinfo=UTC)
+    batch = BLSMacroProvider().collect(collected_at)
 
     assert batch.status is ProviderStatus.NO_DATA
+    assert batch.collected_at == collected_at
     assert batch.macro == []
     assert batch.diagnostics["macro_series_expected"] == 2
     assert batch.diagnostics["macro_series_collected"] == 0
