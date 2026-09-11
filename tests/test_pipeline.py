@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -29,6 +29,7 @@ from radar.providers import DemoProvider, make_document
 from radar.report import HtmlReportRenderer
 from radar.storage import (
     RadarStore,
+    claims_table,
     driver_candidates_table,
     events_table,
     evidence_table,
@@ -46,6 +47,37 @@ class StaticProvider:
     def collect(self, now: datetime) -> CollectionBatch:
         _ = now
         return self.batch
+
+
+def c6_authorized_fed_batch(now: datetime) -> CollectionBatch:
+    document = make_document(
+        provider="official-rss",
+        tier=SourceTier.A,
+        publisher="Federal Reserve",
+        url="https://example.test/fed-policy",
+        title="Federal Reserve announces interest rate decision",
+        content="The Federal Reserve announced a federal funds rate decision.",
+        published_at=now - timedelta(hours=24),
+        region="US",
+    )
+    market = MarketObservation(
+        id=stable_id("market", f"c6-ai|^GSPC|{now.isoformat()}"),
+        symbol="^GSPC",
+        name="S&P 500",
+        region="US",
+        observed_at=now,
+        close=98,
+        previous_close=100,
+        change_pct=-2,
+        currency="USD",
+        provider="test-market",
+    )
+    return CollectionBatch(
+        provider="c6-authorized-fixture",
+        documents=[document],
+        markets=[market],
+        diagnostics={"market_items_expected": 1, "market_items_collected": 1},
+    )
 
 
 def track_run_transitions(monkeypatch) -> list[str]:
@@ -790,6 +822,11 @@ def test_structured_ai_configuration_failure_keeps_deterministic_report(
         raise LLMConfigurationError("missing test credentials")
 
     monkeypatch.setattr("radar.pipeline.build_generation_provider", fail_generation_provider)
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(c6_authorized_fed_batch(now))],
+    )
     settings = Settings(
         app_env="test",
         data_mode="demo",
@@ -801,7 +838,7 @@ def test_structured_ai_configuration_failure_keeps_deterministic_report(
         email_mode="disabled",
     )
 
-    result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+    result = run_daily(settings, now=now)
 
     assert result.report_path.endswith("global-investment-radar-2026-09-07.html")
     assert result.ai_status == "failed"
@@ -836,6 +873,11 @@ def test_zero_ai_request_budget_uses_single_guarded_seam_and_keeps_report(
         "radar.pipeline.build_generation_provider",
         unexpected_provider_construction,
     )
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(c6_authorized_fed_batch(now))],
+    )
     settings = Settings(
         app_env="test",
         data_mode="demo",
@@ -848,16 +890,153 @@ def test_zero_ai_request_budget_uses_single_guarded_seam_and_keeps_report(
         email_mode="disabled",
     )
 
-    result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+    result = run_daily(settings, now=now)
 
     assert seam_calls == [(1, None)]
-    assert result.events == 5
+    assert result.events == 2
     assert result.market_events == 1
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
     assert "Top Global Events" in html
     assert "AI explanation" not in html
+
+
+def test_c6_rejects_sec_ponzi_before_c2_and_empty_bundle_uses_zero_ai_requests(
+    tmp_path, monkeypatch
+) -> None:
+    from radar.enrichment import run_structured_explanation_enrichment as run_guarded
+    from radar.explanation import build_driver_candidates as build_c2
+
+    now = datetime(2026, 9, 10, 20, tzinfo=UTC)
+    sec_ponzi = make_document(
+        provider="sec-newsroom-rss",
+        tier=SourceTier.A,
+        publisher="U.S. SEC",
+        url="https://www.sec.gov/newsroom/press-releases/example",
+        title=(
+            "SEC Charges Founder and His Two New Jersey-Based Companies "
+            "in Alleged $16 Million Ponzi Scheme"
+        ),
+        content="The Securities and Exchange Commission announced an enforcement action.",
+        published_at=now - timedelta(hours=24),
+        region="US",
+    )
+    market = MarketObservation(
+        id=stable_id("market", "c6-hard-negative|3033.HK|2026-09-10"),
+        symbol="3033.HK",
+        name="Hang Seng TECH ETF proxy",
+        region="HK",
+        observed_at=now,
+        close=97.88,
+        previous_close=100,
+        change_pct=-2.12,
+        currency="HKD",
+        provider="test-market",
+    )
+    batch = CollectionBatch(
+        provider="c6-hard-negative",
+        documents=[sec_ponzi],
+        markets=[market],
+        diagnostics={"market_items_expected": 1, "market_items_collected": 1},
+    )
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(batch)],
+    )
+    c2_candidate_event_ids: list[list[str]] = []
+
+    def capture_c2(**kwargs):
+        c2_candidate_event_ids.append(
+            [item.id for item in kwargs["candidate_events"]]
+        )
+        return build_c2(**kwargs)
+
+    seam_results: list[AIEnrichmentResult] = []
+    seam_bundle_counts: list[int] = []
+
+    def capture_guarded(bundles, provider, **limits):
+        materialized = list(bundles)
+        seam_bundle_counts.append(len(materialized))
+        result = run_guarded(materialized, provider, **limits)
+        seam_results.append(result)
+        return result
+
+    provider_constructions = 0
+    provider_generate_calls = 0
+
+    class UnexpectedProvider:
+        name = "unexpected"
+
+        def generate(self, request):
+            nonlocal provider_generate_calls
+            provider_generate_calls += 1
+            raise AssertionError("empty ExplanationBundle must not consume an LLM request")
+
+    def build_unexpected_provider(settings):
+        nonlocal provider_constructions
+        _ = settings
+        provider_constructions += 1
+        return UnexpectedProvider()
+
+    rendered_context: dict[str, object] = {}
+    original_render = HtmlReportRenderer.render
+
+    def capture_render(renderer: HtmlReportRenderer, context: dict[str, object]) -> str:
+        rendered_context.update(context)
+        return original_render(renderer, context)
+
+    monkeypatch.setattr("radar.pipeline.build_driver_candidates", capture_c2)
+    monkeypatch.setattr(
+        "radar.pipeline.run_structured_explanation_enrichment",
+        capture_guarded,
+    )
+    monkeypatch.setattr(
+        "radar.pipeline.build_generation_provider",
+        build_unexpected_provider,
+    )
+    monkeypatch.setattr(HtmlReportRenderer, "render", capture_render)
+    settings = Settings(
+        app_env="test",
+        data_mode="live",
+        database_url=f"sqlite:///{(tmp_path / 'c6-hard-negative.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=True,
+        daily_llm_budget=1,
+        ai_max_requests_per_run=2,
+        llm_provider="deepseek",
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=now)
+
+    assert c2_candidate_event_ids == [[]]
+    assert result.driver_candidates == 0
+    assert seam_bundle_counts == [0]
+    assert len(seam_results) == 1
+    assert seam_results[0].usage.requests_attempted == 0
+    assert provider_constructions == 0
+    assert provider_generate_calls == 0
+    store = RadarStore(settings.database_url)
+    with store.engine.connect() as connection:
+        interpretation_claim_ids = connection.execute(
+            select(claims_table.c.id).where(
+                claims_table.c.claim_type == "INTERPRETATION"
+            )
+        ).scalars().all()
+    assert interpretation_claim_ids == []
+    bundles_by_target = rendered_context["explanation_bundles"]
+    assert isinstance(bundles_by_target, dict)
+    assert len(bundles_by_target) == 1
+    bundle = next(iter(bundles_by_target.values()))
+    assert bundle.driver_candidates == []
+    assert bundle.claims == []
+    assert bundle.evidence == []
+    html = (tmp_path / "reports" / "global-investment-radar-2026-09-11.html").read_text(
+        encoding="utf-8"
+    )
+    assert "No evidence-backed driver identified." in html
+    assert "Top Global Events" in html
 
 
 def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
@@ -906,6 +1085,11 @@ def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
 
     monkeypatch.setattr("radar.pipeline.build_generation_provider", lambda settings: provider)
     monkeypatch.setattr(HtmlReportRenderer, "render", capture_render)
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(c6_authorized_fed_batch(now))],
+    )
     settings = Settings(
         app_env="test",
         data_mode="demo",
@@ -917,7 +1101,7 @@ def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
         email_mode="disabled",
     )
 
-    result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
+    result = run_daily(settings, now=now)
 
     assert result.ai_status == "enabled"
     assert len(provider.requests) == 1
@@ -1123,6 +1307,7 @@ def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatc
         title="Federal Reserve announces interest rate decision for S&P 500 context",
         content="The Federal Reserve announced a federal funds rate decision.",
         published_at=now.replace(day=8),
+        region="US",
     )
     prior_b = make_document(
         provider="official-rss",
@@ -1132,6 +1317,7 @@ def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatc
         title="Federal Reserve announces interest rate decision for S&P 500 context",
         content="An independent report covered the federal funds rate decision.",
         published_at=now.replace(day=8, hour=21),
+        region="US",
     )
     ambiguous = make_document(
         provider="official-rss",
@@ -1141,6 +1327,7 @@ def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatc
         title="Consumer price index shows inflation pressures & context",
         content="The consumer price index showed inflation pressures.",
         published_at=now.replace(hour=18),
+        region="US",
     )
     market = MarketObservation(
         id=stable_id("market", "multi-driver|^GSPC|2026-09-09"),
@@ -1212,6 +1399,7 @@ def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch)
         title="S&P 500 responds to Federal Reserve policy announcement",
         content="The official statement explicitly named the S&P 500.",
         published_at=now.replace(day=8),
+        region="US",
     )
     broad_a = make_document(
         provider="official-rss",
@@ -1221,6 +1409,7 @@ def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch)
         title="Consumer price index shows inflation pressures",
         content="The consumer price index showed inflation pressures.",
         published_at=now.replace(day=8, hour=18),
+        region="US",
     )
     broad_b = make_document(
         provider="official-rss",
@@ -1230,6 +1419,7 @@ def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch)
         title="Consumer price index shows inflation pressures",
         content="An independent report covered the consumer price index.",
         published_at=now.replace(day=8, hour=19),
+        region="US",
     )
     market = MarketObservation(
         id=stable_id("market", "ranked-pipeline|^GSPC|2026-09-09"),

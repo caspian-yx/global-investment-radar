@@ -39,6 +39,7 @@ from radar.explanation import (
 from radar.ingestion import collect_intelligence_providers
 from radar.llm import AnalysisProvider, LLMError, build_generation_provider, build_llm_provider
 from radar.providers import build_providers
+from radar.relevance import EventTargetDecision, build_event_target_relationships
 from radar.report import HtmlReportRenderer, report_context
 from radar.storage import RadarStore
 
@@ -234,14 +235,39 @@ def _run_started_pipeline(
             *macro_backdrop_evidence,
         ]
     )
-    driver_candidates, driver_claims = build_driver_candidates(
+    relationships = build_event_target_relationships(
         target_events=market_events,
         candidate_events=official_events,
-        evidence=evidence,
         documents=documents,
         assets=universe["assets"],
-        as_of=started_at,
     )
+    allowed_event_ids_by_target: dict[str, set[str]] = {
+        target.id: set() for target in market_events
+    }
+    for relationship in relationships:
+        if relationship.decision is EventTargetDecision.ALLOW:
+            allowed_event_ids_by_target[relationship.target_event_id].add(
+                relationship.candidate_event_id
+            )
+    official_events_by_id = {item.id: item for item in official_events}
+    driver_candidates = []
+    driver_claims = []
+    for target in sorted(market_events, key=lambda item: item.id):
+        target_driver_candidates, target_driver_claims = build_driver_candidates(
+            target_events=[target],
+            candidate_events=[
+                official_events_by_id[event_id]
+                for event_id in sorted(allowed_event_ids_by_target[target.id])
+            ],
+            evidence=evidence,
+            documents=documents,
+            assets=universe["assets"],
+            as_of=started_at,
+        )
+        driver_candidates.extend(target_driver_candidates)
+        driver_claims.extend(target_driver_claims)
+    driver_candidates = unique_by_id(driver_candidates)
+    driver_claims = unique_by_id(driver_claims)
     claims = unique_by_id(
         [*c1_claims, *cross_asset_claims, *macro_backdrop_claims, *driver_claims]
     )
@@ -266,8 +292,11 @@ def _run_started_pipeline(
         for bundle in explanation_bundles
         for candidate in bundle.driver_candidates
     ]
+    generation_bundles = [
+        bundle for bundle in explanation_bundles if bundle.driver_candidates
+    ]
     generation_provider = None
-    if settings.effective_ai_enabled and explanation_bundles:
+    if settings.effective_ai_enabled and generation_bundles:
         try:
             generation_provider = build_generation_provider(settings)
         except LLMError as exc:
@@ -276,7 +305,7 @@ def _run_started_pipeline(
                 type(exc).__name__,
             )
     ai_enrichment = run_structured_explanation_enrichment(
-        explanation_bundles,
+        generation_bundles,
         generation_provider,
         max_requests=settings.ai_max_requests_per_run,
         max_input_tokens=settings.ai_max_input_tokens_per_run,
@@ -287,7 +316,7 @@ def _run_started_pipeline(
         "AI enrichment bundles=%d attempted=%d succeeded=%d failed=%d "
         "skipped_budget=%d input_tokens=%d output_tokens=%d total_tokens=%d "
         "budget_exhausted=%s",
-        len(explanation_bundles),
+        len(generation_bundles),
         ai_enrichment.usage.requests_attempted,
         ai_enrichment.usage.requests_succeeded,
         ai_enrichment.usage.requests_failed,
@@ -350,7 +379,7 @@ def _run_started_pipeline(
         settings,
         ai_enrichment,
         analyses,
-        has_bundles=bool(explanation_bundles),
+        has_bundles=bool(generation_bundles),
         provider_available=generation_provider is not None,
     )
 
