@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 
+from radar.config import Settings
 from radar.domain import (
     CollectionBatch,
     MarketObservation,
@@ -18,9 +19,11 @@ from radar.providers import (
     DemoProvider,
     OfficialRSSProvider,
     YahooChartProvider,
+    build_providers,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
+APPLE = {"cik": "0000320193", "name": "Apple Inc."}
 FED_FEED = {
     "url": "https://www.federalreserve.gov/feeds/press_all.xml",
     "publisher": "Federal Reserve",
@@ -282,6 +285,71 @@ def test_rss_all_feed_failures_are_failed(monkeypatch) -> None:
     assert batch.status is ProviderStatus.FAILED
     assert batch.diagnostics["feeds_succeeded"] == 0
     assert batch.diagnostics["feeds_failed"] == 2
+
+
+def test_rss_instance_name_is_used_for_batch_and_documents(monkeypatch) -> None:
+    raw = (FIXTURES / "fed_press_feed.xml").read_text(encoding="utf-8")
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=raw, request=request)
+
+    monkeypatch.setattr(
+        "radar.providers.httpx.Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    provider = OfficialRSSProvider(
+        [FED_FEED], lookback_hours=168, name="federal-reserve-monetary-rss"
+    )
+
+    batch = provider.collect(datetime(2026, 9, 8, tzinfo=UTC))
+
+    assert batch.provider == "federal-reserve-monetary-rss"
+    assert batch.documents[0].provider == "federal-reserve-monetary-rss"
+
+
+def test_rss_failure_warning_does_not_include_raw_exception(monkeypatch) -> None:
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("contact=private@example.com", request=request)
+
+    monkeypatch.setattr(
+        "radar.providers.httpx.Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    batch = OfficialRSSProvider([FED_FEED], lookback_hours=48).collect(
+        datetime(2026, 9, 8, tzinfo=UTC)
+    )
+
+    assert batch.status is ProviderStatus.FAILED
+    assert all("private@example.com" not in warning for warning in batch.warnings)
+
+
+def test_build_providers_registers_sec_and_distinct_named_rss_instances() -> None:
+    universe = {
+        "assets": [],
+        "sec_filings": {"filers": [APPLE], "forms": ["8-K"]},
+        "rss_feeds": [
+            {**FED_FEED, "provider_name": "federal-reserve-monetary-rss"},
+            {**SEC_FEED, "provider_name": "sec-newsroom-rss"},
+        ],
+    }
+    settings = Settings(
+        _env_file=None,
+        DATA_MODE="live",
+        SEC_CONTACT_EMAIL="radar-owner@example.com",
+    )
+
+    providers = build_providers(settings, universe)
+
+    assert [provider.name for provider in providers] == [
+        "experimental-yahoo-chart",
+        "bls-public-api",
+        "sec-edgar-submissions",
+        "federal-reserve-monetary-rss",
+        "sec-newsroom-rss",
+    ]
 
 
 def test_yahoo_complete_collection_is_ok_despite_experimental_warning(monkeypatch) -> None:

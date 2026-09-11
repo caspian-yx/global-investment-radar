@@ -26,6 +26,7 @@ from radar.domain import (
     stable_id,
 )
 from radar.ingestion import IntelligenceProvider, build_source_document
+from radar.official_sources import SECFilingsProvider
 
 RSS_DIAGNOSTIC_KEYS = (
     "total_entries",
@@ -398,11 +399,17 @@ class OfficialRSSProvider:
     name = "official-rss"
 
     def __init__(
-        self, feeds: list[dict[str, Any]], lookback_hours: int, timeout: float = 15
+        self,
+        feeds: list[dict[str, Any]],
+        lookback_hours: int,
+        timeout: float = 15,
+        *,
+        name: str = "official-rss",
     ) -> None:
         self.feeds = feeds
         self.lookback = timedelta(hours=lookback_hours)
         self.timeout = timeout
+        self.name = name
 
     def collect(self, now: datetime) -> CollectionBatch:
         documents: list[SourceDocument] = []
@@ -425,7 +432,10 @@ class OfficialRSSProvider:
                         diagnostics[key] += parsed.diagnostics[key]
                 except (httpx.HTTPError, ET.ParseError, ValueError) as exc:
                     diagnostics["feeds_failed"] += 1
-                    warnings.append(f"{feed['publisher']}: {type(exc).__name__}: {exc}")
+                    warnings.append(
+                        f"{feed['publisher']}: feed collection failed "
+                        f"({type(exc).__name__})."
+                    )
         if self.feeds and diagnostics["feeds_failed"] == len(self.feeds):
             status = ProviderStatus.FAILED
         elif diagnostics["feeds_failed"]:
@@ -564,8 +574,33 @@ def build_providers(
 ) -> list[IntelligenceProvider]:
     if settings.data_mode == "demo":
         return [DemoProvider()]
-    return [
+    providers: list[IntelligenceProvider] = [
         YahooChartProvider(universe["assets"]),
         BLSMacroProvider(),
-        OfficialRSSProvider(universe["rss_feeds"], settings.lookback_hours),
     ]
+    sec_config = universe.get("sec_filings")
+    if isinstance(sec_config, dict) and sec_config.get("filers"):
+        providers.append(
+            SECFilingsProvider(
+                filers=sec_config.get("filers", []),
+                forms=sec_config.get("forms", []),
+                lookback_hours=settings.lookback_hours,
+                contact_email=settings.sec_contact_email,
+            )
+        )
+    unnamed_feeds: list[dict[str, Any]] = []
+    for feed in universe["rss_feeds"]:
+        provider_name = feed.get("provider_name")
+        if isinstance(provider_name, str) and provider_name.strip():
+            providers.append(
+                OfficialRSSProvider(
+                    [feed],
+                    settings.lookback_hours,
+                    name=provider_name.strip(),
+                )
+            )
+        else:
+            unnamed_feeds.append(feed)
+    if unnamed_feeds:
+        providers.append(OfficialRSSProvider(unnamed_feeds, settings.lookback_hours))
+    return providers

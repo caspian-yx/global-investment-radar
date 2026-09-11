@@ -20,26 +20,52 @@
   ],
   "rss_feeds": [
     {
-      "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+      "provider_name": "federal-reserve-monetary-rss",
+      "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
       "publisher": "Federal Reserve",
       "source_tier": "A",
       "source_category": "official",
       "source_role": "primary",
-      "native_ids_immutable": true,
+      "native_ids_immutable": false,
       "region": "US"
     },
     {
+      "provider_name": "sec-newsroom-rss",
       "url": "https://www.sec.gov/news/pressreleases.rss",
       "publisher": "U.S. SEC",
       "source_tier": "A",
       "source_category": "regulatory",
       "source_role": "primary",
-      "native_ids_immutable": true,
+      "native_ids_immutable": false,
       "region": "US"
+    },
+    {
+      "provider_name": "ecb-official-press-rss",
+      "url": "https://www.ecb.europa.eu/rss/press.html",
+      "publisher": "European Central Bank",
+      "source_tier": "A",
+      "source_category": "official",
+      "source_role": "primary",
+      "native_ids_immutable": false,
+      "region": "EU"
     }
   ],
+  "sec_filings": {
+    "filers": [
+      {"cik": "0000320193", "name": "Apple Inc."},
+      {"cik": "0000789019", "name": "Microsoft Corp."},
+      {"cik": "0001045810", "name": "NVIDIA Corp."},
+      {"cik": "0001652044", "name": "Alphabet Inc."},
+      {"cik": "0001018724", "name": "Amazon.com Inc."},
+      {"cik": "0001326801", "name": "Meta Platforms, Inc."},
+      {"cik": "0001318605", "name": "Tesla, Inc."},
+      {"cik": "0000019617", "name": "JPMorgan Chase & Co."}
+    ],
+    "forms": ["8-K", "8-K/A", "10-Q", "10-Q/A", "10-K", "10-K/A", "6-K", "6-K/A", "20-F", "20-F/A"]
+  },
   "entities": [
     {"id": "federal-reserve", "name": "Federal Reserve", "aliases": ["federal reserve", "fed", "fomc"]},
+    {"id": "european-central-bank", "name": "European Central Bank", "aliases": ["european central bank", "ecb", "governing council"]},
     {"id": "us-sec", "name": "U.S. SEC", "aliases": ["securities and exchange commission", "u.s. sec", "sec"]},
     {"id": "ai-infrastructure", "name": "AI Infrastructure", "aliases": ["ai infrastructure", "data center", "accelerator", "gpu"]},
     {"id": "semiconductors", "name": "Semiconductors", "aliases": ["semiconductor", "chip", "hbm", "foundry"]},

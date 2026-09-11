@@ -8,7 +8,7 @@ Implemented in this milestone:
 
 - Provider interface with isolated failures.
 - Reproducible synthetic demo provider with visible safety labels.
-- Optional live zero-key providers: official Federal Reserve/SEC RSS, official BLS API, and an experimental Yahoo chart adapter.
+- Optional live providers: official Federal Reserve/ECB/SEC feeds, SEC Submissions metadata, official BLS API, and an experimental Yahoo chart adapter.
 - Canonical, provider-isolated intelligence ingestion with deterministic source provenance and stable document identity.
 - Deterministic normalization, URL cleanup, near-duplicate clustering, event classification, entity mapping and explainable importance ranking.
 - Evidence-first `SourceDocument → Evidence → Claim → Event` domain model.
@@ -21,7 +21,7 @@ Implemented in this milestone:
 - Cloud-MVP preparation: Asia/Shanghai business date, scheduled live/no-AI execution,
   SMTP delivery, operational logs, failure-preserved artifacts, and optional PostgreSQL.
 
-Not implemented yet: connecting the DeepSeek transport to the analysis pipeline, company filing/XBRL extraction, licensed global market provider, earnings consensus/transcripts, theme scoring, weekly report or dashboard.
+Not implemented yet: SEC filing body/XBRL/exhibit extraction, licensed global market provider, earnings consensus/transcripts, theme scoring, weekly report or dashboard.
 
 ## Quick start
 
@@ -51,7 +51,9 @@ uv run radar daily --data-mode live --no-ai
 
 Live mode currently combines:
 
-- Federal Reserve and SEC official RSS feeds.
+- Federal Reserve monetary-policy, ECB press-release and SEC newsroom RSS feeds.
+- Recent SEC filing metadata for the configured CIK watchlist. Set `SEC_CONTACT_EMAIL`
+  so requests carry the SEC-required application contact identity.
 - BLS public macro API.
 - An experimental, unofficial Yahoo chart endpoint for market snapshots.
 
