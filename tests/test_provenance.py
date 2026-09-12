@@ -22,6 +22,7 @@ from radar.domain import (
 from radar.explanation import build_macro_backdrop
 from radar.providers import make_document
 from radar.storage import (
+    C7_IMPORTANCE_RELEVANCE_MIGRATION,
     DRIVER_CANDIDATE_MIGRATION,
     STORY_CONSOLIDATION_MIGRATION,
     RadarStore,
@@ -225,8 +226,7 @@ def test_migration_failure_is_unversioned_and_retryable(tmp_path, monkeypatch) -
     with store.engine.connect() as connection:
         row = connection.execute(
             text(
-                "SELECT source_kind, source_id, checksum FROM evidence "
-                "WHERE id = 'legacy-evidence'"
+                "SELECT source_kind, source_id, checksum FROM evidence WHERE id = 'legacy-evidence'"
             )
         ).one()
         version_count = connection.execute(
@@ -376,14 +376,13 @@ def test_exact_c1_database_upgrades_additively_to_driver_schema(tmp_path) -> Non
 
     with upgraded.engine.connect() as connection:
         sentinel = connection.execute(text("SELECT id, value FROM c1_sentinel")).all()
-        versions = set(
-            connection.execute(text("SELECT version FROM schema_migrations")).scalars()
-        )
+        versions = set(connection.execute(text("SELECT version FROM schema_migrations")).scalars())
     assert sentinel == [("one", "preserve me")]
     assert versions == {
         "001_c1_evidence_provenance",
         DRIVER_CANDIDATE_MIGRATION,
         STORY_CONSOLIDATION_MIGRATION,
+        C7_IMPORTANCE_RELEVANCE_MIGRATION,
     }
 
 
@@ -427,10 +426,7 @@ def test_driver_marker_recovers_missing_table_but_rejects_malformed_table(tmp_pa
             "(version VARCHAR(80) PRIMARY KEY, applied_at VARCHAR(40) NOT NULL)"
         )
         connection.execute(
-            text(
-                "INSERT INTO schema_migrations (version, applied_at) "
-                "VALUES (:version, 'test')"
-            ),
+            text("INSERT INTO schema_migrations (version, applied_at) VALUES (:version, 'test')"),
             {"version": DRIVER_CANDIDATE_MIGRATION},
         )
         connection.exec_driver_sql(
@@ -452,10 +448,7 @@ def test_driver_marker_rejects_wrong_types_and_nullable_columns(tmp_path) -> Non
             "(version VARCHAR(80) PRIMARY KEY, applied_at VARCHAR(40) NOT NULL)"
         )
         connection.execute(
-            text(
-                "INSERT INTO schema_migrations (version, applied_at) "
-                "VALUES (:version, 'test')"
-            ),
+            text("INSERT INTO schema_migrations (version, applied_at) VALUES (:version, 'test')"),
             {"version": DRIVER_CANDIDATE_MIGRATION},
         )
         connection.exec_driver_sql(
@@ -573,9 +566,7 @@ def test_repeated_macro_period_reuses_persisted_first_observation(tmp_path) -> N
         unit="index",
         provider="bls-public-api",
     )
-    later = first.model_copy(
-        update={"observed_at": first.observed_at + timedelta(days=1)}
-    )
+    later = first.model_copy(update={"observed_at": first.observed_at + timedelta(days=1)})
 
     store.save_macro_with_first_observed_events("run-1", [first], first.observed_at)
     store.save_macro_with_first_observed_events("run-2", [later], later.observed_at)
@@ -583,9 +574,7 @@ def test_repeated_macro_period_reuses_persisted_first_observation(tmp_path) -> N
 
     assert canonical == [first]
     first_claims, first_evidence, _ = build_macro_backdrop([first], [], first.observed_at)
-    later_claims, later_evidence, _ = build_macro_backdrop(
-        canonical, [], later.observed_at
-    )
+    later_claims, later_evidence, _ = build_macro_backdrop(canonical, [], later.observed_at)
     assert later_evidence[0].id == first_evidence[0].id
     assert later_claims[0].id == first_claims[0].id
 
@@ -628,9 +617,7 @@ def test_fresh_database_has_versioned_story_schema(tmp_path) -> None:
 
     inspector = inspect(store.engine)
     story_columns = {column["name"] for column in inspector.get_columns("stories")}
-    membership_columns = {
-        column["name"] for column in inspector.get_columns("story_documents")
-    }
+    membership_columns = {column["name"] for column in inspector.get_columns("story_documents")}
     membership_indexes = inspector.get_indexes("story_documents")
     with store.engine.connect() as connection:
         marker = connection.execute(
@@ -659,8 +646,7 @@ def test_fresh_database_has_versioned_story_schema(tmp_path) -> None:
         "first_linked_at",
     } <= membership_columns
     assert any(
-        index["column_names"] == ["source_document_id", "rule_version"]
-        and index["unique"]
+        index["column_names"] == ["source_document_id", "rule_version"] and index["unique"]
         for index in membership_indexes
     )
     assert marker == STORY_CONSOLIDATION_MIGRATION
@@ -711,10 +697,7 @@ def test_story_marker_cannot_hide_malformed_schema(tmp_path) -> None:
             "(version VARCHAR(80) PRIMARY KEY, applied_at VARCHAR(40) NOT NULL)"
         )
         connection.execute(
-            text(
-                "INSERT INTO schema_migrations (version, applied_at) "
-                "VALUES (:version, 'test')"
-            ),
+            text("INSERT INTO schema_migrations (version, applied_at) VALUES (:version, 'test')"),
             {"version": STORY_CONSOLIDATION_MIGRATION},
         )
         connection.exec_driver_sql(
@@ -739,10 +722,7 @@ def test_story_marker_rejects_nullable_or_wrongly_typed_contract_columns(tmp_pat
             "(version VARCHAR(80) PRIMARY KEY, applied_at VARCHAR(40) NOT NULL)"
         )
         connection.execute(
-            text(
-                "INSERT INTO schema_migrations (version, applied_at) "
-                "VALUES (:version, 'test')"
-            ),
+            text("INSERT INTO schema_migrations (version, applied_at) VALUES (:version, 'test')"),
             {"version": STORY_CONSOLIDATION_MIGRATION},
         )
         connection.exec_driver_sql(
@@ -800,9 +780,7 @@ def test_story_identity_is_immutable_during_upsert(tmp_path) -> None:
     store.save_documents("run-1", [source])
     store.save_stories("run-1", [story_item])
 
-    conflicting = story_item.model_copy(
-        update={"identity_seed_document_id": "different-document"}
-    )
+    conflicting = story_item.model_copy(update={"identity_seed_document_id": "different-document"})
     with pytest.raises(ValueError, match="immutable identity"):
         store.save_stories("run-2", [conflicting])
 

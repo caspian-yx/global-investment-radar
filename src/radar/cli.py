@@ -57,6 +57,7 @@ def doctor() -> None:
         "app_env": settings.app_env,
         "data_mode": settings.data_mode,
         "business_timezone": settings.business_timezone,
+        "radar_view_id": settings.radar_view_id,
         "database_driver": settings.database_url.split(":", 1)[0],
         "report_output_dir": str(settings.resolved_report_output_dir),
         "ai_enabled": settings.ai_enabled,

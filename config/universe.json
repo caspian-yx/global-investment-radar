@@ -187,17 +187,28 @@
     "forms": ["8-K", "8-K/A", "10-Q", "10-Q/A", "10-K", "10-K/A", "6-K", "6-K/A", "20-F", "20-F/A"]
   },
   "entities": [
-    {"id": "federal-reserve", "name": "Federal Reserve", "aliases": ["federal reserve", "fed", "fomc"]},
-    {"id": "european-central-bank", "name": "European Central Bank", "aliases": ["european central bank", "ecb", "governing council"]},
-    {"id": "us-sec", "name": "U.S. SEC", "aliases": ["securities and exchange commission", "u.s. sec", "sec"]},
-    {"id": "bank-of-japan", "name": "Bank of Japan", "aliases": ["bank of japan", "boj"]},
-    {"id": "bank-of-korea", "name": "Bank of Korea", "aliases": ["bank of korea", "bok", "monetary policy board"]},
-    {"id": "china-nbs", "name": "National Bureau of Statistics of China", "aliases": ["national bureau of statistics of china", "nbs china", "china's national bureau of statistics"]},
-    {"id": "us-eia", "name": "U.S. Energy Information Administration", "aliases": ["u.s. energy information administration", "energy information administration", "eia"]},
-    {"id": "apple", "name": "Apple Inc.", "aliases": ["apple inc", "apple newsroom", "apple"]},
-    {"id": "nvidia", "name": "NVIDIA Corp.", "aliases": ["nvidia corporation", "nvidia corp", "nvidia"]},
-    {"id": "ai-infrastructure", "name": "AI Infrastructure", "aliases": ["ai infrastructure", "data center", "accelerator", "gpu"]},
-    {"id": "semiconductors", "name": "Semiconductors", "aliases": ["semiconductor", "chip", "hbm", "foundry"]},
-    {"id": "energy", "name": "Energy", "aliases": ["oil", "natural gas", "energy", "opec"]}
+    {"id": "federal-reserve", "name": "Federal Reserve", "aliases": ["federal reserve", "fed", "fomc"], "importance_points": 10},
+    {"id": "european-central-bank", "name": "European Central Bank", "aliases": ["european central bank", "ecb", "governing council"], "importance_points": 10},
+    {"id": "us-sec", "name": "U.S. SEC", "aliases": ["securities and exchange commission", "u.s. sec", "sec"], "importance_points": 9},
+    {"id": "bank-of-japan", "name": "Bank of Japan", "aliases": ["bank of japan", "boj"], "importance_points": 9},
+    {"id": "bank-of-korea", "name": "Bank of Korea", "aliases": ["bank of korea", "bok", "monetary policy board"], "importance_points": 8},
+    {"id": "china-nbs", "name": "National Bureau of Statistics of China", "aliases": ["national bureau of statistics of china", "nbs china", "china's national bureau of statistics"], "importance_points": 8},
+    {"id": "us-eia", "name": "U.S. Energy Information Administration", "aliases": ["u.s. energy information administration", "energy information administration", "eia"], "importance_points": 7},
+    {"id": "apple", "name": "Apple Inc.", "aliases": ["apple inc", "apple newsroom", "apple"], "importance_points": 5},
+    {"id": "nvidia", "name": "NVIDIA Corp.", "aliases": ["nvidia corporation", "nvidia corp", "nvidia"], "importance_points": 6},
+    {"id": "ai-infrastructure", "name": "AI Infrastructure", "aliases": ["ai infrastructure", "data center", "accelerator", "gpu"], "importance_points": 7},
+    {"id": "semiconductors", "name": "Semiconductors", "aliases": ["semiconductor", "chip", "hbm", "foundry"], "importance_points": 6},
+    {"id": "energy", "name": "Energy", "aliases": ["oil", "natural gas", "energy", "opec"], "importance_points": 6}
+  ],
+  "views": [
+    {"id": "global", "name": "Global", "watched_entity_ids": [], "regions": [], "topics": [], "event_types": [], "asset_classes": []},
+    {"id": "us", "name": "US", "watched_entity_ids": ["federal-reserve", "us-sec", "apple", "nvidia"], "regions": ["US"], "topics": ["RATES", "INFLATION", "EMPLOYMENT", "TECHNOLOGY", "REGULATION"], "event_types": ["policy", "macro_release", "legal", "earnings", "guidance"], "asset_classes": ["EQUITY_INDEX", "EQUITY_ETF_PROXY"]},
+    {"id": "china-hk", "name": "China / HK", "watched_entity_ids": ["china-nbs"], "regions": ["CN", "HK"], "topics": ["CHINA", "REGULATION", "RATES", "TECHNOLOGY"], "event_types": ["policy", "macro_release", "legal", "supply_chain"], "asset_classes": ["EQUITY_INDEX", "EQUITY_ETF_PROXY"]},
+    {"id": "korea", "name": "Korea", "watched_entity_ids": ["bank-of-korea"], "regions": ["KR"], "topics": ["RATES", "TECHNOLOGY"], "event_types": ["policy", "macro_release", "supply_chain"], "asset_classes": ["EQUITY_INDEX"]},
+    {"id": "japan", "name": "Japan", "watched_entity_ids": ["bank-of-japan"], "regions": ["JP"], "topics": ["RATES", "TECHNOLOGY"], "event_types": ["policy", "macro_release", "supply_chain"], "asset_classes": ["EQUITY_INDEX"]},
+    {"id": "europe", "name": "Europe", "watched_entity_ids": ["european-central-bank"], "regions": ["EU"], "topics": ["RATES", "INFLATION", "ENERGY", "TECHNOLOGY"], "event_types": ["policy", "macro_release", "legal", "supply_chain"], "asset_classes": ["EQUITY_INDEX"]},
+    {"id": "ai-semiconductors", "name": "AI / Semiconductors", "watched_entity_ids": ["ai-infrastructure", "semiconductors", "nvidia"], "regions": [], "topics": ["TECHNOLOGY"], "event_types": ["earnings", "guidance", "product", "supply_chain", "m_and_a"], "asset_classes": ["EQUITY_INDEX", "EQUITY_ETF_PROXY"]},
+    {"id": "macro", "name": "Macro", "watched_entity_ids": ["federal-reserve", "european-central-bank", "bank-of-japan", "bank-of-korea", "china-nbs", "us-eia"], "regions": [], "topics": ["RATES", "INFLATION", "EMPLOYMENT", "ENERGY", "CHINA", "US"], "event_types": ["policy", "macro_release", "risk"], "asset_classes": []},
+    {"id": "energy", "name": "Energy", "watched_entity_ids": ["energy", "us-eia"], "regions": ["US"], "topics": ["ENERGY"], "event_types": ["macro_release", "supply_chain", "risk"], "asset_classes": ["COMMODITY"]}
   ]
 }

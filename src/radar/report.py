@@ -42,5 +42,7 @@ def report_context(
     return {
         "generated_at": datetime.now(UTC),
         "structured_explanations": dict(structured_explanations or {}),
+        "c7_scores": {},
+        "active_view": "Global",
         **kwargs,
     }

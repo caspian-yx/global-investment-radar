@@ -96,14 +96,22 @@
         </td></tr>
 
         <tr><td style="padding:22px 26px 8px;">
-          <h2 style="margin:0 0 12px;font-size:19px;color:#132238;">Top Global Events</h2>
+          <h2 style="margin:0 0 12px;font-size:19px;color:#132238;">Top Global Events · {{ active_view }}</h2>
           {% for event in events %}
+          {% set c7 = c7_scores.get(event.id) %}
           <div style="padding:16px 0;border-top:1px solid #dfe4e8;">
-            <div style="font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:#6a7c8f;">{{ event.event_type.value }} · Importance {{ '%.1f'|format(event.importance_score) }}/100</div>
+            <div style="font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:#6a7c8f;">{{ event.event_type.value }} · {% if c7 %}Priority {{ c7.priority_band.value }} · Importance {{ '%.1f'|format(c7.importance_score) }}/100 · Relevance {{ '%.1f'|format(c7.relevance_score) }}/100{% else %}Importance {{ '%.1f'|format(event.importance_score) }}/100{% endif %}</div>
             <h3 style="margin:6px 0 8px;font-size:16px;line-height:1.4;color:#17202a;">{{ event.title }}</h3>
             <div style="font-size:13px;color:#667583;line-height:1.5;">
               Evidence {{ event.evidence_ids|length }} · Confidence {{ '%.0f'|format(event.confidence * 100) }}%
             </div>
+            {% if c7 %}
+            <div style="margin-top:7px;font-size:12px;line-height:1.5;color:#596b7a;">
+              Global {{ c7.importance_band.value }} · View {{ c7.relevance_band.value }}
+              {% if c7.importance_reason_codes %} · {{ c7.importance_reason_codes|map(attribute='value')|join(', ') }}{% endif %}
+              {% if c7.relevance_reason_codes %} · {{ c7.relevance_reason_codes|map(attribute='value')|join(', ') }}{% endif %}
+            </div>
+            {% endif %}
             <div style="margin-top:8px;font-size:13px;line-height:1.55;color:#4e5e6d;">
               {% for document_id in event.source_document_ids %}
                 {% set source = sources[document_id] %}

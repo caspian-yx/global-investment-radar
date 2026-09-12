@@ -35,6 +35,14 @@ from radar.explanation import (
     unique_by_id,
     validate_driver_candidate_bundle,
 )
+from radar.importance import (
+    C7_RULE_VERSION,
+    load_view_profiles,
+    rank_events,
+    rank_scores,
+    score_events,
+    summarize_c7_scores,
+)
 from radar.ingestion import collect_intelligence_providers, deduplicate_source_documents
 from radar.llm import AnalysisProvider, LLMError, build_generation_provider, build_llm_provider
 from radar.macro import build_macro_source_document
@@ -262,6 +270,42 @@ def _run_started_pipeline(
         key=lambda item: item.importance_score,
         reverse=True,
     )
+    views = load_view_profiles(universe)
+    raw_c7_scores = score_events(
+        events,
+        story_consolidation.stories,
+        documents,
+        views,
+        universe,
+        started_at,
+    )
+    c7_scores = [
+        ranked_score
+        for view in views
+        for ranked_score in rank_scores(
+            [item for item in raw_c7_scores if item.view_id == view.id]
+        )
+    ]
+    selected_view = next(
+        (view for view in views if view.id == settings.radar_view_id),
+        None,
+    )
+    if selected_view is None:
+        raise ValueError(f"Configured RADAR_VIEW_ID is unknown: {settings.radar_view_id}")
+    selected_c7_scores = [item for item in c7_scores if item.view_id == selected_view.id]
+    ranked_events = rank_events(events, selected_c7_scores)
+    c7_diagnostics = summarize_c7_scores(c7_scores)
+    c7_diagnostics.update(
+        {
+            "selected_for_report": min(10, len(ranked_events)),
+            "filtered_from_report": max(0, len(ranked_events) - 10),
+        }
+    )
+    logger.info(
+        "C7 scoring view=%s diagnostics=%s",
+        selected_view.id,
+        c7_diagnostics,
+    )
     c1_claims = [*official_claims, *market_claims, *macro_claims]
     c1_evidence = [*official_evidence, *market_evidence, *macro_evidence]
     observation_evidence = build_observation_evidence(markets, [])
@@ -447,6 +491,7 @@ def _run_started_pipeline(
     store.save_events(run_id, events)
     store.save_driver_candidates(run_id, driver_candidates)
     store.save_markets(run_id, markets)
+    store.save_c7_scores(run_id, c7_scores)
 
     expected_market_count = sum(
         batch.diagnostics.get("market_items_expected", 0) for batch in batches
@@ -495,7 +540,9 @@ def _run_started_pipeline(
         provider_statuses=provider_statuses,
         markets=markets,
         macro=macro,
-        events=events[:10],
+        events=ranked_events[:10],
+        c7_scores={item.event_id: item for item in selected_c7_scores},
+        active_view=selected_view.name,
         claims=claim_map,
         evidence=evidence_map,
         sources=source_map,
@@ -601,6 +648,11 @@ def _run_started_pipeline(
         "email_status": email_status,
         "elapsed_seconds": elapsed_seconds,
         "story_consolidation": story_consolidation.diagnostics,
+        "c7": {
+            "selected_view": selected_view.id,
+            "rule_version": C7_RULE_VERSION,
+            "diagnostics": c7_diagnostics,
+        },
     }
     logger.info(
         "Pipeline completed run_id=%s report_path=%s email_status=%s elapsed_seconds=%.3f",

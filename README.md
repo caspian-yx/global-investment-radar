@@ -12,7 +12,7 @@ Implemented in this milestone:
   Europe, China, Korea and Japan; SEC Submissions metadata; the official BLS API;
   and an experimental Yahoo chart adapter.
 - Canonical, provider-isolated intelligence ingestion with deterministic source provenance and stable document identity.
-- Deterministic normalization, URL cleanup, near-duplicate clustering, event classification, entity mapping and explainable importance ranking.
+- Deterministic normalization, URL cleanup, near-duplicate clustering, event classification, entity mapping and explainable C7 importance/relevance ranking.
 - Evidence-first `SourceDocument → Evidence → Claim → Event` domain model.
 - SQLite development storage and PostgreSQL-compatible SQLAlchemy schema.
 - Provider-neutral text-generation contract with DeepSeek transport and a controllable fake.
@@ -23,7 +23,7 @@ Implemented in this milestone:
 - Cloud-MVP preparation: Asia/Shanghai business date, scheduled live/no-AI execution,
   SMTP delivery, operational logs, failure-preserved artifacts, and optional PostgreSQL.
 
-Not implemented yet: SEC filing body/XBRL/exhibit extraction, licensed global market provider, earnings consensus/transcripts, theme scoring, weekly report or dashboard.
+Not implemented yet: SEC filing body/XBRL/exhibit extraction, licensed global market provider, earnings consensus/transcripts, C8 market impact, C9 product redesign, weekly report or dashboard.
 
 ## Quick start
 
@@ -127,6 +127,22 @@ and C2 continues to evaluate each evidence document's own publication time.
 HKMA remains deferred because its current feed exposes date-level publication precision.
 GDELT and commercial media feeds remain deferred until rate limits, timestamp semantics and
 reuse rights satisfy the same provenance contract.
+
+## C7 importance and investor relevance
+
+C7 scores canonical Events after Story/Event construction. Global Importance is a separate,
+bounded deterministic score based on source authority, event materiality, Story scope,
+configured canonical entity significance, conservative source corroboration and freshness.
+Investor Relevance is scored independently against the selected `RADAR_VIEW_ID` profile using
+watched entities, explicit topics/event types/asset classes and bounded region matches. Generic
+lexical overlap does not create relevance, and C7 never changes C6 authorization or C2 semantics.
+
+Configured profiles live in `config/universe.json` and are schema-validated at startup. C7
+persists per-run, per-view results with rule version, view snapshot, components, reason codes,
+priority band and rank through additive migration `004_c7_importance_relevance`; previous rule
+versions remain attributable. The report renders the selected view's deterministic priority
+bands (`MUST_READ`, `IMPORTANT`, `WATCH`, `BACKGROUND`, `IGNORE`) while canonical low-ranked
+Events remain preserved.
 
 ## AI configuration
 

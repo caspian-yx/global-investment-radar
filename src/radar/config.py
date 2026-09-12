@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     universe_path: Path = Field(
         default=Path("config/universe.json"), validation_alias="UNIVERSE_PATH"
     )
+    radar_view_id: str = Field(default="global", validation_alias="RADAR_VIEW_ID", min_length=1)
     lookback_hours: int = Field(default=48, validation_alias="LOOKBACK_HOURS", ge=1, le=168)
 
     ai_enabled: bool = Field(default=False, validation_alias="AI_ENABLED")

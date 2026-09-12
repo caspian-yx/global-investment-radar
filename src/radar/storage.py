@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     Index,
+    Integer,
     MetaData,
     String,
     Table,
@@ -36,13 +37,16 @@ from radar.domain import (
     SourceKind,
     Story,
     StoryDocumentMembership,
+    stable_id,
 )
+from radar.importance import C7Score
 from radar.ranking import rank_driver_candidates
 
 metadata = MetaData()
 EVIDENCE_PROVENANCE_MIGRATION = "001_c1_evidence_provenance"
 DRIVER_CANDIDATE_MIGRATION = "002_c2_1_driver_candidates"
 STORY_CONSOLIDATION_MIGRATION = "003_c6_3_story_consolidation"
+C7_IMPORTANCE_RELEVANCE_MIGRATION = "004_c7_importance_relevance"
 
 runs = Table(
     "runs",
@@ -164,6 +168,32 @@ Index(
     unique=True,
 )
 
+c7_rankings_table = Table(
+    "c7_rankings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("run_id", String(36), nullable=False, index=True),
+    Column("event_id", String(36), nullable=False),
+    Column("story_id", String(36)),
+    Column("view_id", String(80), nullable=False),
+    Column("rule_version", String(40), nullable=False),
+    Column("scored_at", DateTime(timezone=True), nullable=False),
+    Column("priority_rank", Integer),
+    Column("priority_band", String(24), nullable=False),
+    Column("importance_score", Float, nullable=False),
+    Column("relevance_score", Float, nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ux_c7_rankings_run_event_view_rule",
+    c7_rankings_table.c.run_id,
+    c7_rankings_table.c.event_id,
+    c7_rankings_table.c.view_id,
+    c7_rankings_table.c.rule_version,
+    unique=True,
+)
+Index("ix_c7_rankings_view_rank", c7_rankings_table.c.view_id, c7_rankings_table.c.priority_rank)
+
 market_table = Table(
     "market_observations",
     metadata,
@@ -217,6 +247,92 @@ class RadarStore:
         self._migrate_phase_b_to_c1()
         self._migrate_c1_to_c2_1()
         self._migrate_c2_1_to_c6_3()
+        self._migrate_c6_3_to_c7()
+
+    def _migrate_c6_3_to_c7(self) -> None:
+        """Apply and validate additive C7 score persistence."""
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(80) PRIMARY KEY,
+                    applied_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+            self._validate_c7_schema(connection)
+            applied = connection.execute(
+                text("SELECT version FROM schema_migrations WHERE version = :version"),
+                {"version": C7_IMPORTANCE_RELEVANCE_MIGRATION},
+            ).first()
+            if applied is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO schema_migrations (version, applied_at) "
+                        "VALUES (:version, :applied_at)"
+                    ),
+                    {
+                        "version": C7_IMPORTANCE_RELEVANCE_MIGRATION,
+                        "applied_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+
+    def _validate_c7_schema(self, connection: Connection) -> None:
+        inspector = inspect(connection)
+        required_columns = {
+            "id",
+            "run_id",
+            "event_id",
+            "story_id",
+            "view_id",
+            "rule_version",
+            "scored_at",
+            "priority_rank",
+            "priority_band",
+            "importance_score",
+            "relevance_score",
+            "payload_json",
+        }
+        columns = {column["name"]: column for column in inspector.get_columns("c7_rankings")}
+        if not required_columns <= set(columns):
+            missing = ", ".join(sorted(required_columns - set(columns)))
+            raise RuntimeError(f"C7 migration is incomplete: c7_rankings missing {missing}")
+        expected_types = {
+            "scored_at": DateTime,
+            "importance_score": Float,
+            "relevance_score": Float,
+            "priority_rank": Integer,
+            "payload_json": Text,
+        }
+        for name, expected_type in expected_types.items():
+            if not isinstance(columns[name]["type"], expected_type):
+                raise RuntimeError(f"C7 migration is incomplete: invalid c7_rankings column {name}")
+        for name, column in columns.items():
+            if name not in {"story_id", "priority_rank"} and column["nullable"]:
+                raise RuntimeError(
+                    f"C7 migration is incomplete: nullable c7_rankings column {name}"
+                )
+        if inspector.get_pk_constraint("c7_rankings")["constrained_columns"] != ["id"]:
+            raise RuntimeError("C7 migration is incomplete: invalid c7_rankings primary key")
+        indexes = inspector.get_indexes("c7_rankings")
+        if not any(
+            index["column_names"] == ["run_id", "event_id", "view_id", "rule_version"]
+            and index["unique"]
+            for index in indexes
+        ):
+            raise RuntimeError("C7 migration is incomplete: identity index missing")
+        invalid_rows = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM c7_rankings WHERE id IS NULL OR TRIM(id) = '' "
+                "OR run_id IS NULL OR TRIM(run_id) = '' "
+                "OR event_id IS NULL OR TRIM(event_id) = '' "
+                "OR view_id IS NULL OR TRIM(view_id) = '' "
+                "OR rule_version IS NULL OR TRIM(rule_version) = '' "
+                "OR payload_json IS NULL OR TRIM(payload_json) = ''"
+            )
+        ).scalar_one()
+        if invalid_rows:
+            raise RuntimeError("C7 migration is incomplete: invalid persisted rows")
 
     def _migrate_c2_1_to_c6_3(self) -> None:
         """Apply and validate the additive C2.1 -> C6.3 Story migration."""
@@ -275,8 +391,7 @@ class RadarStore:
             column["name"]: column for column in inspector.get_columns("stories")
         }
         membership_columns_by_name = {
-            column["name"]: column
-            for column in inspector.get_columns("story_documents")
+            column["name"]: column for column in inspector.get_columns("story_documents")
         }
         story_columns = set(story_columns_by_name)
         membership_columns = set(membership_columns_by_name)
@@ -286,12 +401,9 @@ class RadarStore:
                 f"Story consolidation migration is incomplete: stories missing {missing}"
             )
         if not required_membership_columns <= membership_columns:
-            missing = ", ".join(
-                sorted(required_membership_columns - membership_columns)
-            )
+            missing = ", ".join(sorted(required_membership_columns - membership_columns))
             raise RuntimeError(
-                "Story consolidation migration is incomplete: "
-                f"story_documents missing {missing}"
+                f"Story consolidation migration is incomplete: story_documents missing {missing}"
             )
         story_datetime_columns = {
             "earliest_trusted_published_at",
@@ -307,8 +419,7 @@ class RadarStore:
                 expected_type = Text
             if not isinstance(column["type"], expected_type) or column["nullable"]:
                 raise RuntimeError(
-                    "Story consolidation migration is incomplete: "
-                    f"invalid stories column {name}"
+                    f"Story consolidation migration is incomplete: invalid stories column {name}"
                 )
         for name in required_membership_columns:
             column = membership_columns_by_name[name]
@@ -324,13 +435,9 @@ class RadarStore:
             raise RuntimeError(
                 "Story consolidation migration is incomplete: invalid stories primary key"
             )
-        if (
-            inspector.get_pk_constraint("story_documents")["constrained_columns"]
-            != ["id"]
-        ):
+        if inspector.get_pk_constraint("story_documents")["constrained_columns"] != ["id"]:
             raise RuntimeError(
-                "Story consolidation migration is incomplete: "
-                "invalid story_documents primary key"
+                "Story consolidation migration is incomplete: invalid story_documents primary key"
             )
         story_indexes = inspector.get_indexes("stories")
         membership_indexes = inspector.get_indexes("story_documents")
@@ -343,16 +450,13 @@ class RadarStore:
                 "Story consolidation migration is incomplete: identity index missing"
             )
         if not any(
-            index["column_names"] == ["source_document_id", "rule_version"]
-            and index["unique"]
+            index["column_names"] == ["source_document_id", "rule_version"] and index["unique"]
             for index in membership_indexes
         ):
             raise RuntimeError(
                 "Story consolidation migration is incomplete: membership index missing"
             )
-        if not any(
-            index["column_names"] == ["story_id"] for index in membership_indexes
-        ):
+        if not any(index["column_names"] == ["story_id"] for index in membership_indexes):
             raise RuntimeError(
                 "Story consolidation migration is incomplete: story lookup index missing"
             )
@@ -392,8 +496,7 @@ class RadarStore:
                 """
             )
             columns = {
-                column["name"]
-                for column in inspect(connection).get_columns("driver_candidates")
+                column["name"] for column in inspect(connection).get_columns("driver_candidates")
             }
             required = {
                 "id",
@@ -406,9 +509,7 @@ class RadarStore:
             }
             if not required <= columns:
                 missing = ", ".join(sorted(required - columns))
-                raise RuntimeError(
-                    f"DriverCandidate migration is incomplete: missing {missing}"
-                )
+                raise RuntimeError(f"DriverCandidate migration is incomplete: missing {missing}")
             connection.exec_driver_sql(
                 """
                 CREATE INDEX IF NOT EXISTS ix_driver_candidates_target_event_id
@@ -435,8 +536,7 @@ class RadarStore:
     def _validate_driver_candidate_schema(self, connection: Connection) -> None:
         inspector = inspect(connection)
         columns_by_name = {
-            column["name"]: column
-            for column in inspector.get_columns("driver_candidates")
+            column["name"]: column for column in inspector.get_columns("driver_candidates")
         }
         columns = set(columns_by_name)
         required = {
@@ -450,28 +550,22 @@ class RadarStore:
         }
         if not required <= columns:
             missing = ", ".join(sorted(required - columns))
-            raise RuntimeError(
-                f"DriverCandidate migration is incomplete: missing {missing}"
-            )
+            raise RuntimeError(f"DriverCandidate migration is incomplete: missing {missing}")
         for name in required:
             column = columns_by_name[name]
             if not isinstance(column["type"], String):
                 raise RuntimeError(
-                    "DriverCandidate migration is incomplete: "
-                    f"invalid type for {name}"
+                    f"DriverCandidate migration is incomplete: invalid type for {name}"
                 )
             if column["nullable"]:
                 raise RuntimeError(
-                    "DriverCandidate migration is incomplete: "
-                    f"{name} must be NOT NULL"
+                    f"DriverCandidate migration is incomplete: {name} must be NOT NULL"
                 )
         primary_key = inspector.get_pk_constraint("driver_candidates")["constrained_columns"]
         if primary_key != ["id"]:
             raise RuntimeError("DriverCandidate migration is incomplete: invalid primary key")
         indexes = inspector.get_indexes("driver_candidates")
-        if not any(
-            index["column_names"] == ["target_event_id"] for index in indexes
-        ):
+        if not any(index["column_names"] == ["target_event_id"] for index in indexes):
             raise RuntimeError("DriverCandidate migration is incomplete: index missing")
         invalid_rows = connection.execute(
             text(
@@ -503,17 +597,13 @@ class RadarStore:
             if self._evidence_migration_applied(connection):
                 self._validate_evidence_provenance_schema(connection)
                 return
-            columns = {
-                column["name"] for column in inspect(connection).get_columns("evidence")
-            }
+            columns = {column["name"] for column in inspect(connection).get_columns("evidence")}
             if "source_kind" not in columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE evidence ADD COLUMN source_kind VARCHAR(32)"
                 )
             if "source_id" not in columns:
-                connection.exec_driver_sql(
-                    "ALTER TABLE evidence ADD COLUMN source_id VARCHAR(80)"
-                )
+                connection.exec_driver_sql("ALTER TABLE evidence ADD COLUMN source_id VARCHAR(80)")
             self._backfill_document_evidence(connection)
             connection.exec_driver_sql(
                 """
@@ -561,10 +651,7 @@ class RadarStore:
             missing = ", ".join(sorted(required - columns))
             raise RuntimeError(f"Evidence provenance migration is incomplete: {missing}")
         indexes = inspector.get_indexes("evidence")
-        if not any(
-            index["column_names"] == ["source_kind", "source_id"]
-            for index in indexes
-        ):
+        if not any(index["column_names"] == ["source_kind", "source_id"] for index in indexes):
             raise RuntimeError("Evidence provenance migration is incomplete: index missing")
         invalid_rows = connection.execute(
             text(
@@ -581,9 +668,7 @@ class RadarStore:
             )
         ).scalar_one()
         if invalid_rows:
-            raise RuntimeError(
-                "Evidence provenance migration is incomplete: invalid evidence rows"
-            )
+            raise RuntimeError("Evidence provenance migration is incomplete: invalid evidence rows")
 
     def start_run(
         self,
@@ -605,14 +690,10 @@ class RadarStore:
         }
         self._upsert(runs, run_id, payload)
 
-    def complete_run(
-        self, run_id: str, completed_at: datetime, details: dict[str, Any]
-    ) -> None:
+    def complete_run(self, run_id: str, completed_at: datetime, details: dict[str, Any]) -> None:
         self._finish_run(run_id, completed_at, "completed", details)
 
-    def fail_run(
-        self, run_id: str, completed_at: datetime, details: dict[str, Any]
-    ) -> None:
+    def fail_run(self, run_id: str, completed_at: datetime, details: dict[str, Any]) -> None:
         self._finish_run(run_id, completed_at, "failed", details)
 
     def _finish_run(
@@ -659,13 +740,9 @@ class RadarStore:
             return []
         with self.engine.connect() as connection:
             payloads = connection.execute(
-                select(source_documents.c.payload_json).where(
-                    source_documents.c.id.in_(ids)
-                )
+                select(source_documents.c.payload_json).where(source_documents.c.id.in_(ids))
             ).scalars()
-            documents = [
-                SourceDocument.model_validate_json(payload) for payload in payloads
-            ]
+            documents = [SourceDocument.model_validate_json(payload) for payload in payloads]
         return sorted(documents, key=lambda item: item.id)
 
     def save_stories(self, run_id: str, items: Iterable[Story]) -> None:
@@ -686,16 +763,19 @@ class RadarStore:
                         "Story persistence is missing SourceDocument: "
                         + ", ".join(missing_document_ids)
                     )
-                row = connection.execute(
-                    select(
-                        stories_table.c.created_run_id,
-                        stories_table.c.payload_json,
-                    ).where(stories_table.c.id == item.id)
-                ).mappings().first()
+                row = (
+                    connection.execute(
+                        select(
+                            stories_table.c.created_run_id,
+                            stories_table.c.payload_json,
+                        ).where(stories_table.c.id == item.id)
+                    )
+                    .mappings()
+                    .first()
+                )
                 seed_row = connection.execute(
                     select(stories_table.c.id).where(
-                        stories_table.c.identity_seed_document_id
-                        == item.identity_seed_document_id,
+                        stories_table.c.identity_seed_document_id == item.identity_seed_document_id,
                         stories_table.c.rule_version == item.rule_version,
                     )
                 ).first()
@@ -704,8 +784,7 @@ class RadarStore:
                 if row is not None:
                     existing = Story.model_validate_json(row["payload_json"])
                     if (
-                        existing.identity_seed_document_id
-                        != item.identity_seed_document_id
+                        existing.identity_seed_document_id != item.identity_seed_document_id
                         or existing.identity_profile != item.identity_profile
                         or existing.rule_version != item.rule_version
                     ):
@@ -725,15 +804,71 @@ class RadarStore:
                         "presentation_document_id": item.presentation_document_id,
                         "rule_version": item.rule_version,
                         "event_type": item.event_type.value,
-                        "earliest_trusted_published_at": (
-                            item.earliest_trusted_published_at
-                        ),
+                        "earliest_trusted_published_at": (item.earliest_trusted_published_at),
                         "latest_published_at": item.latest_published_at,
                         "first_seen_at": item.first_seen_at,
                         "last_seen_at": item.last_seen_at,
                         "payload_json": item.model_dump_json(),
                     },
                 )
+
+    def save_c7_scores(self, run_id: str, items: Iterable[C7Score]) -> None:
+        """Persist immutable C7 evaluations, retaining rows by rule version."""
+        for item in items:
+            row_id = stable_id(
+                "c7-ranking",
+                f"{run_id}|{item.event_id}|{item.view_id}|{item.rule_version}",
+            )
+            values = {
+                "id": row_id,
+                "run_id": run_id,
+                "event_id": item.event_id,
+                "story_id": item.story_id,
+                "view_id": item.view_id,
+                "rule_version": item.rule_version,
+                "scored_at": item.scored_at,
+                "priority_rank": item.priority_rank,
+                "priority_band": item.priority_band.value,
+                "importance_score": item.importance_score,
+                "relevance_score": item.relevance_score,
+                "payload_json": item.model_dump_json(),
+            }
+            with self.engine.begin() as connection:
+                existing = connection.execute(
+                    select(c7_rankings_table.c.payload_json).where(c7_rankings_table.c.id == row_id)
+                ).scalar_one_or_none()
+                if existing is not None:
+                    if existing != item.model_dump_json():
+                        connection.execute(
+                            c7_rankings_table.update()
+                            .where(c7_rankings_table.c.id == row_id)
+                            .values(**values)
+                        )
+                    continue
+                conflicting = connection.execute(
+                    select(c7_rankings_table.c.id).where(
+                        c7_rankings_table.c.run_id == run_id,
+                        c7_rankings_table.c.event_id == item.event_id,
+                        c7_rankings_table.c.view_id == item.view_id,
+                        c7_rankings_table.c.rule_version == item.rule_version,
+                    )
+                ).first()
+                if conflicting is not None and conflicting.id != row_id:
+                    raise ValueError("C7 score identity is not deterministic")
+                connection.execute(c7_rankings_table.insert().values(**values))
+
+    def load_c7_scores(self, run_id: str, view_id: str, rule_version: str) -> list[C7Score]:
+        with self.engine.connect() as connection:
+            payloads = connection.execute(
+                select(c7_rankings_table.c.payload_json)
+                .where(
+                    c7_rankings_table.c.run_id == run_id,
+                    c7_rankings_table.c.view_id == view_id,
+                    c7_rankings_table.c.rule_version == rule_version,
+                )
+                .order_by(c7_rankings_table.c.priority_rank, c7_rankings_table.c.event_id)
+            ).scalars()
+            return [C7Score.model_validate_json(payload) for payload in payloads]
 
     def load_stories(self, rule_version: str) -> list[Story]:
         with self.engine.connect() as connection:
@@ -744,15 +879,12 @@ class RadarStore:
             ).scalars()
             return [Story.model_validate_json(payload) for payload in payloads]
 
-    def save_story_memberships(
-        self, items: Iterable[StoryDocumentMembership]
-    ) -> None:
+    def save_story_memberships(self, items: Iterable[StoryDocumentMembership]) -> None:
         for item in items:
             with self.engine.begin() as connection:
                 row = connection.execute(
                     select(story_documents_table.c.payload_json).where(
-                        story_documents_table.c.source_document_id
-                        == item.source_document_id,
+                        story_documents_table.c.source_document_id == item.source_document_id,
                         story_documents_table.c.rule_version == item.rule_version,
                     )
                 ).first()
@@ -766,14 +898,10 @@ class RadarStore:
                         raise ValueError("Story membership identity is not deterministic")
                     continue
                 story_exists = connection.execute(
-                    select(stories_table.c.id).where(
-                        stories_table.c.id == item.story_id
-                    )
+                    select(stories_table.c.id).where(stories_table.c.id == item.story_id)
                 ).first()
                 if story_exists is None:
-                    raise ValueError(
-                        f"Story membership references missing Story {item.story_id}"
-                    )
+                    raise ValueError(f"Story membership references missing Story {item.story_id}")
                 document_exists = connection.execute(
                     select(source_documents.c.id).where(
                         source_documents.c.id == item.source_document_id
@@ -799,19 +927,14 @@ class RadarStore:
                     },
                 )
 
-    def load_story_memberships(
-        self, rule_version: str
-    ) -> list[StoryDocumentMembership]:
+    def load_story_memberships(self, rule_version: str) -> list[StoryDocumentMembership]:
         with self.engine.connect() as connection:
             payloads = connection.execute(
                 select(story_documents_table.c.payload_json)
                 .where(story_documents_table.c.rule_version == rule_version)
                 .order_by(story_documents_table.c.source_document_id)
             ).scalars()
-            return [
-                StoryDocumentMembership.model_validate_json(payload)
-                for payload in payloads
-            ]
+            return [StoryDocumentMembership.model_validate_json(payload) for payload in payloads]
 
     def save_evidence(self, run_id: str, items: Iterable[Evidence]) -> None:
         for item in items:
@@ -821,9 +944,7 @@ class RadarStore:
                 self._evidence_values(run_id, item),
             )
 
-    def load_evidence_for_source(
-        self, source_kind: SourceKind, source_id: str
-    ) -> list[Evidence]:
+    def load_evidence_for_source(self, source_kind: SourceKind, source_id: str) -> list[Evidence]:
         with self.engine.connect() as connection:
             rows = connection.execute(
                 select(
@@ -863,9 +984,7 @@ class RadarStore:
                 self._event_values(run_id, item),
             )
 
-    def save_driver_candidates(
-        self, run_id: str, items: Iterable[DriverCandidate]
-    ) -> None:
+    def save_driver_candidates(self, run_id: str, items: Iterable[DriverCandidate]) -> None:
         for item in items:
             self._upsert(
                 driver_candidates_table,
@@ -881,13 +1000,12 @@ class RadarStore:
                 },
             )
 
-    def load_driver_candidates_for_target(
-        self, target_event_id: str
-    ) -> list[DriverCandidate]:
+    def load_driver_candidates_for_target(self, target_event_id: str) -> list[DriverCandidate]:
         with self.engine.connect() as connection:
             rows = connection.execute(
-                select(driver_candidates_table.c.payload_json)
-                .where(driver_candidates_table.c.target_event_id == target_event_id)
+                select(driver_candidates_table.c.payload_json).where(
+                    driver_candidates_table.c.target_event_id == target_event_id
+                )
             ).scalars()
             return rank_driver_candidates(
                 DriverCandidate.model_validate_json(payload) for payload in rows
@@ -958,9 +1076,7 @@ class RadarStore:
                 ).first()
                 if event_exists:
                     continue
-                self._save_macro_event_bundle(
-                    connection, run_id, event, claim, evidence
-                )
+                self._save_macro_event_bundle(connection, run_id, event, claim, evidence)
                 events.append(event)
                 claims.append(claim)
                 evidence_items.append(evidence)
@@ -981,16 +1097,11 @@ class RadarStore:
                     )
                 ).scalars()
                 observations = [
-                    MacroObservation.model_validate_json(payload)
-                    for payload in payloads
+                    MacroObservation.model_validate_json(payload) for payload in payloads
                 ]
                 if not observations:
-                    raise RuntimeError(
-                        "Persisted macro observation is missing after atomic save"
-                    )
-                result.append(
-                    min(observations, key=lambda item: (item.observed_at, item.id))
-                )
+                    raise RuntimeError("Persisted macro observation is missing after atomic save")
+                result.append(min(observations, key=lambda item: (item.observed_at, item.id)))
         return result
 
     def _save_macro_event_bundle(
