@@ -7,11 +7,8 @@ import pytest
 from radar.deterministic import (
     assess_report_quality,
     build_deterministic_summary,
-    canonicalize_url,
     classify_event,
-    cluster_documents,
-    extract_events,
-    title_similarity,
+    extract_story_events,
 )
 from radar.domain import (
     ClaimType,
@@ -25,7 +22,9 @@ from radar.domain import (
     SourceRole,
     SourceTier,
 )
+from radar.ingestion import canonicalize_source_url
 from radar.providers import make_document
+from radar.story import consolidate_stories
 
 
 @pytest.mark.parametrize(
@@ -54,7 +53,9 @@ def test_strong_policy_phrases_still_classify_as_policy(text: str) -> None:
 
 
 def test_canonicalize_url_removes_tracking() -> None:
-    assert canonicalize_url("https://EXAMPLE.com/a?utm_source=x&id=7#top") == "https://example.com/a?id=7"
+    assert canonicalize_source_url(
+        "https://EXAMPLE.com/a?utm_source=x&id=7#top"
+    ) == "https://example.com/a?id=7"
 
 
 def test_macro_summary_separates_value_from_unit() -> None:
@@ -77,34 +78,6 @@ def test_macro_summary_separates_value_from_unit() -> None:
     assert summary.macro_headlines == ["CPI: 333.918 index"]
 
 
-def test_near_duplicate_titles_cluster() -> None:
-    now = datetime(2026, 9, 7, tzinfo=UTC)
-    one = make_document(
-        provider="test",
-        tier=SourceTier.A,
-        publisher="A",
-        url="https://example.com/a",
-        title="Central bank keeps policy rate unchanged and retains data-dependent guidance",
-        content="one",
-        published_at=now,
-        source_category=SourceCategory.OFFICIAL,
-        source_role=SourceRole.PRIMARY,
-    )
-    two = make_document(
-        provider="test",
-        tier=SourceTier.B,
-        publisher="B",
-        url="https://example.com/b",
-        title="Central bank keeps policy rate unchanged, retains data dependent guidance",
-        content="two",
-        published_at=now,
-        source_category=SourceCategory.PROFESSIONAL_NEWS,
-        source_role=SourceRole.SECONDARY,
-    )
-    assert title_similarity(one.title, two.title) > 0.68
-    assert len(cluster_documents([one, two])) == 1
-
-
 def test_official_document_event_keeps_fact_claim_and_document_provenance() -> None:
     now = datetime(2026, 9, 7, tzinfo=UTC)
     document = make_document(
@@ -119,7 +92,10 @@ def test_official_document_event_keeps_fact_claim_and_document_provenance() -> N
         source_role=SourceRole.PRIMARY,
     )
 
-    events, claims, evidence = extract_events([[document]], [], now)
+    consolidated = consolidate_stories([document], [], now=now)
+    events, claims, evidence = extract_story_events(
+        consolidated.stories, [document], now
+    )
 
     assert len(events) == len(claims) == len(evidence) == 1
     assert claims[0].claim_type is ClaimType.FACT

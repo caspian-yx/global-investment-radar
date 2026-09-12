@@ -716,7 +716,7 @@ def test_high_confidence_requires_distinct_publishers_and_distinct_urls() -> Non
     assert drivers[0].confidence is DriverConfidence.MEDIUM
 
 
-def test_post_event_cluster_document_is_excluded_from_driver_support() -> None:
+def test_post_event_story_document_is_excluded_from_driver_support() -> None:
     _, target_evidence, target = target_bundle()
     prior = document(
         "prior-document",
@@ -760,7 +760,7 @@ def test_post_event_cluster_document_is_excluded_from_driver_support() -> None:
     assert drivers[0].confidence is DriverConfidence.MEDIUM
 
 
-def test_uncited_cluster_document_cannot_increase_corroboration() -> None:
+def test_uncited_story_document_cannot_increase_corroboration() -> None:
     _, target_evidence, target = target_bundle()
     cited = document(
         "cited-document",

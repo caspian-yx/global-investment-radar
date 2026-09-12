@@ -34,12 +34,15 @@ from radar.domain import (
     MarketObservation,
     SourceDocument,
     SourceKind,
+    Story,
+    StoryDocumentMembership,
 )
 from radar.ranking import rank_driver_candidates
 
 metadata = MetaData()
 EVIDENCE_PROVENANCE_MIGRATION = "001_c1_evidence_provenance"
 DRIVER_CANDIDATE_MIGRATION = "002_c2_1_driver_candidates"
+STORY_CONSOLIDATION_MIGRATION = "003_c6_3_story_consolidation"
 
 runs = Table(
     "runs",
@@ -120,6 +123,47 @@ Index(
     driver_candidates_table.c.target_event_id,
 )
 
+stories_table = Table(
+    "stories",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("created_run_id", String(36), nullable=False),
+    Column("last_run_id", String(36), nullable=False, index=True),
+    Column("identity_seed_document_id", String(36), nullable=False),
+    Column("presentation_document_id", String(36), nullable=False),
+    Column("rule_version", String(40), nullable=False),
+    Column("event_type", String(40), nullable=False),
+    Column("earliest_trusted_published_at", DateTime(timezone=True), nullable=False),
+    Column("latest_published_at", DateTime(timezone=True), nullable=False),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ux_stories_identity_seed_rule",
+    stories_table.c.identity_seed_document_id,
+    stories_table.c.rule_version,
+    unique=True,
+)
+
+story_documents_table = Table(
+    "story_documents",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("story_id", String(36), nullable=False, index=True),
+    Column("source_document_id", String(36), nullable=False),
+    Column("match_method", String(48), nullable=False),
+    Column("rule_version", String(40), nullable=False),
+    Column("first_linked_at", DateTime(timezone=True), nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ux_story_documents_source_rule",
+    story_documents_table.c.source_document_id,
+    story_documents_table.c.rule_version,
+    unique=True,
+)
+
 market_table = Table(
     "market_observations",
     metadata,
@@ -172,6 +216,169 @@ class RadarStore:
         metadata.create_all(self.engine)
         self._migrate_phase_b_to_c1()
         self._migrate_c1_to_c2_1()
+        self._migrate_c2_1_to_c6_3()
+
+    def _migrate_c2_1_to_c6_3(self) -> None:
+        """Apply and validate the additive C2.1 -> C6.3 Story migration."""
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(80) PRIMARY KEY,
+                    applied_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+            self._validate_story_schema(connection)
+            applied = connection.execute(
+                text("SELECT version FROM schema_migrations WHERE version = :version"),
+                {"version": STORY_CONSOLIDATION_MIGRATION},
+            ).first()
+            if applied is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO schema_migrations (version, applied_at) "
+                        "VALUES (:version, :applied_at)"
+                    ),
+                    {
+                        "version": STORY_CONSOLIDATION_MIGRATION,
+                        "applied_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+
+    def _validate_story_schema(self, connection: Connection) -> None:
+        inspector = inspect(connection)
+        required_story_columns = {
+            "id",
+            "created_run_id",
+            "last_run_id",
+            "identity_seed_document_id",
+            "presentation_document_id",
+            "rule_version",
+            "event_type",
+            "earliest_trusted_published_at",
+            "latest_published_at",
+            "first_seen_at",
+            "last_seen_at",
+            "payload_json",
+        }
+        required_membership_columns = {
+            "id",
+            "story_id",
+            "source_document_id",
+            "match_method",
+            "rule_version",
+            "first_linked_at",
+            "payload_json",
+        }
+        story_columns_by_name = {
+            column["name"]: column for column in inspector.get_columns("stories")
+        }
+        membership_columns_by_name = {
+            column["name"]: column
+            for column in inspector.get_columns("story_documents")
+        }
+        story_columns = set(story_columns_by_name)
+        membership_columns = set(membership_columns_by_name)
+        if not required_story_columns <= story_columns:
+            missing = ", ".join(sorted(required_story_columns - story_columns))
+            raise RuntimeError(
+                f"Story consolidation migration is incomplete: stories missing {missing}"
+            )
+        if not required_membership_columns <= membership_columns:
+            missing = ", ".join(
+                sorted(required_membership_columns - membership_columns)
+            )
+            raise RuntimeError(
+                "Story consolidation migration is incomplete: "
+                f"story_documents missing {missing}"
+            )
+        story_datetime_columns = {
+            "earliest_trusted_published_at",
+            "latest_published_at",
+            "first_seen_at",
+            "last_seen_at",
+        }
+        membership_datetime_columns = {"first_linked_at"}
+        for name in required_story_columns:
+            column = story_columns_by_name[name]
+            expected_type = DateTime if name in story_datetime_columns else String
+            if name == "payload_json":
+                expected_type = Text
+            if not isinstance(column["type"], expected_type) or column["nullable"]:
+                raise RuntimeError(
+                    "Story consolidation migration is incomplete: "
+                    f"invalid stories column {name}"
+                )
+        for name in required_membership_columns:
+            column = membership_columns_by_name[name]
+            expected_type = DateTime if name in membership_datetime_columns else String
+            if name == "payload_json":
+                expected_type = Text
+            if not isinstance(column["type"], expected_type) or column["nullable"]:
+                raise RuntimeError(
+                    "Story consolidation migration is incomplete: "
+                    f"invalid story_documents column {name}"
+                )
+        if inspector.get_pk_constraint("stories")["constrained_columns"] != ["id"]:
+            raise RuntimeError(
+                "Story consolidation migration is incomplete: invalid stories primary key"
+            )
+        if (
+            inspector.get_pk_constraint("story_documents")["constrained_columns"]
+            != ["id"]
+        ):
+            raise RuntimeError(
+                "Story consolidation migration is incomplete: "
+                "invalid story_documents primary key"
+            )
+        story_indexes = inspector.get_indexes("stories")
+        membership_indexes = inspector.get_indexes("story_documents")
+        if not any(
+            index["column_names"] == ["identity_seed_document_id", "rule_version"]
+            and index["unique"]
+            for index in story_indexes
+        ):
+            raise RuntimeError(
+                "Story consolidation migration is incomplete: identity index missing"
+            )
+        if not any(
+            index["column_names"] == ["source_document_id", "rule_version"]
+            and index["unique"]
+            for index in membership_indexes
+        ):
+            raise RuntimeError(
+                "Story consolidation migration is incomplete: membership index missing"
+            )
+        if not any(
+            index["column_names"] == ["story_id"] for index in membership_indexes
+        ):
+            raise RuntimeError(
+                "Story consolidation migration is incomplete: story lookup index missing"
+            )
+        invalid_stories = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM stories WHERE id IS NULL OR TRIM(id) = '' "
+                "OR identity_seed_document_id IS NULL OR TRIM(identity_seed_document_id) = '' "
+                "OR presentation_document_id IS NULL OR TRIM(presentation_document_id) = '' "
+                "OR rule_version IS NULL OR TRIM(rule_version) = '' "
+                "OR payload_json IS NULL OR TRIM(payload_json) = ''"
+            )
+        ).scalar_one()
+        invalid_memberships = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM story_documents "
+                "WHERE id IS NULL OR TRIM(id) = '' "
+                "OR story_id IS NULL OR TRIM(story_id) = '' "
+                "OR source_document_id IS NULL OR TRIM(source_document_id) = '' "
+                "OR rule_version IS NULL OR TRIM(rule_version) = '' "
+                "OR payload_json IS NULL OR TRIM(payload_json) = ''"
+            )
+        ).scalar_one()
+        if invalid_stories or invalid_memberships:
+            raise RuntimeError(
+                "Story consolidation migration is incomplete: invalid persisted rows"
+            )
 
     def _migrate_c1_to_c2_1(self) -> None:
         """Apply and validate the additive C1 -> C2.1 DriverCandidate migration."""
@@ -445,6 +652,166 @@ class RadarStore:
                     "is_demo": item.is_demo,
                 },
             )
+
+    def load_source_documents(self, document_ids: Iterable[str]) -> list[SourceDocument]:
+        ids = sorted(set(document_ids))
+        if not ids:
+            return []
+        with self.engine.connect() as connection:
+            payloads = connection.execute(
+                select(source_documents.c.payload_json).where(
+                    source_documents.c.id.in_(ids)
+                )
+            ).scalars()
+            documents = [
+                SourceDocument.model_validate_json(payload) for payload in payloads
+            ]
+        return sorted(documents, key=lambda item: item.id)
+
+    def save_stories(self, run_id: str, items: Iterable[Story]) -> None:
+        for item in items:
+            with self.engine.begin() as connection:
+                persisted_document_ids = set(
+                    connection.execute(
+                        select(source_documents.c.id).where(
+                            source_documents.c.id.in_(item.source_document_ids)
+                        )
+                    ).scalars()
+                )
+                missing_document_ids = sorted(
+                    set(item.source_document_ids) - persisted_document_ids
+                )
+                if missing_document_ids:
+                    raise ValueError(
+                        "Story persistence is missing SourceDocument: "
+                        + ", ".join(missing_document_ids)
+                    )
+                row = connection.execute(
+                    select(
+                        stories_table.c.created_run_id,
+                        stories_table.c.payload_json,
+                    ).where(stories_table.c.id == item.id)
+                ).mappings().first()
+                seed_row = connection.execute(
+                    select(stories_table.c.id).where(
+                        stories_table.c.identity_seed_document_id
+                        == item.identity_seed_document_id,
+                        stories_table.c.rule_version == item.rule_version,
+                    )
+                ).first()
+                if seed_row is not None and seed_row.id != item.id:
+                    raise ValueError("Story immutable identity conflicts with persisted seed")
+                if row is not None:
+                    existing = Story.model_validate_json(row["payload_json"])
+                    if (
+                        existing.identity_seed_document_id
+                        != item.identity_seed_document_id
+                        or existing.identity_profile != item.identity_profile
+                        or existing.rule_version != item.rule_version
+                    ):
+                        raise ValueError("Story immutable identity cannot be rewritten")
+                    created_run_id = str(row["created_run_id"])
+                else:
+                    created_run_id = run_id
+                self._upsert_connection(
+                    connection,
+                    stories_table,
+                    item.id,
+                    {
+                        "id": item.id,
+                        "created_run_id": created_run_id,
+                        "last_run_id": run_id,
+                        "identity_seed_document_id": item.identity_seed_document_id,
+                        "presentation_document_id": item.presentation_document_id,
+                        "rule_version": item.rule_version,
+                        "event_type": item.event_type.value,
+                        "earliest_trusted_published_at": (
+                            item.earliest_trusted_published_at
+                        ),
+                        "latest_published_at": item.latest_published_at,
+                        "first_seen_at": item.first_seen_at,
+                        "last_seen_at": item.last_seen_at,
+                        "payload_json": item.model_dump_json(),
+                    },
+                )
+
+    def load_stories(self, rule_version: str) -> list[Story]:
+        with self.engine.connect() as connection:
+            payloads = connection.execute(
+                select(stories_table.c.payload_json)
+                .where(stories_table.c.rule_version == rule_version)
+                .order_by(stories_table.c.id)
+            ).scalars()
+            return [Story.model_validate_json(payload) for payload in payloads]
+
+    def save_story_memberships(
+        self, items: Iterable[StoryDocumentMembership]
+    ) -> None:
+        for item in items:
+            with self.engine.begin() as connection:
+                row = connection.execute(
+                    select(story_documents_table.c.payload_json).where(
+                        story_documents_table.c.source_document_id
+                        == item.source_document_id,
+                        story_documents_table.c.rule_version == item.rule_version,
+                    )
+                ).first()
+                if row is not None:
+                    existing = StoryDocumentMembership.model_validate_json(row.payload_json)
+                    if existing.story_id != item.story_id:
+                        raise ValueError(
+                            "SourceDocument cannot belong to multiple story-v1 Stories"
+                        )
+                    if existing.id != item.id:
+                        raise ValueError("Story membership identity is not deterministic")
+                    continue
+                story_exists = connection.execute(
+                    select(stories_table.c.id).where(
+                        stories_table.c.id == item.story_id
+                    )
+                ).first()
+                if story_exists is None:
+                    raise ValueError(
+                        f"Story membership references missing Story {item.story_id}"
+                    )
+                document_exists = connection.execute(
+                    select(source_documents.c.id).where(
+                        source_documents.c.id == item.source_document_id
+                    )
+                ).first()
+                if document_exists is None:
+                    raise ValueError(
+                        "Story membership references missing SourceDocument "
+                        f"{item.source_document_id}"
+                    )
+                self._upsert_connection(
+                    connection,
+                    story_documents_table,
+                    item.id,
+                    {
+                        "id": item.id,
+                        "story_id": item.story_id,
+                        "source_document_id": item.source_document_id,
+                        "match_method": item.match_method,
+                        "rule_version": item.rule_version,
+                        "first_linked_at": item.first_linked_at,
+                        "payload_json": item.model_dump_json(),
+                    },
+                )
+
+    def load_story_memberships(
+        self, rule_version: str
+    ) -> list[StoryDocumentMembership]:
+        with self.engine.connect() as connection:
+            payloads = connection.execute(
+                select(story_documents_table.c.payload_json)
+                .where(story_documents_table.c.rule_version == rule_version)
+                .order_by(story_documents_table.c.source_document_id)
+            ).scalars()
+            return [
+                StoryDocumentMembership.model_validate_json(payload)
+                for payload in payloads
+            ]
 
     def save_evidence(self, run_id: str, items: Iterable[Evidence]) -> None:
         for item in items:

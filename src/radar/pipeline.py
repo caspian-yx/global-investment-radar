@@ -11,9 +11,8 @@ from radar.config import Settings, load_universe
 from radar.deterministic import (
     assess_report_quality,
     build_deterministic_summary,
-    cluster_documents,
-    extract_events,
     extract_market_events,
+    extract_story_events,
 )
 from radar.domain import (
     AIEnrichmentResult,
@@ -47,6 +46,7 @@ from radar.relevance import (
 )
 from radar.report import HtmlReportRenderer, report_context
 from radar.storage import RadarStore
+from radar.story import STORY_RULE_VERSION, consolidate_stories
 
 logger = logging.getLogger(__name__)
 
@@ -217,9 +217,32 @@ def _run_started_pipeline(
     official_documents = [
         item for item in documents if item.id not in macro_source_document_ids
     ]
-    clusters = cluster_documents(official_documents)
-    official_events, official_claims, official_evidence = extract_events(
-        clusters, universe["entities"], started_at
+    existing_stories = store.load_stories(STORY_RULE_VERSION)
+    existing_memberships = store.load_story_memberships(STORY_RULE_VERSION)
+    persisted_story_documents = store.load_source_documents(
+        membership.source_document_id for membership in existing_memberships
+    )
+    story_consolidation = consolidate_stories(
+        official_documents,
+        universe["entities"],
+        existing_stories=existing_stories,
+        existing_memberships=existing_memberships,
+        known_documents=persisted_story_documents,
+        now=started_at,
+    )
+    logger.info("Story consolidation diagnostics=%s", story_consolidation.diagnostics)
+    story_documents_by_id = {
+        document.id: document
+        for members in story_consolidation.documents_by_story.values()
+        for document in members
+    }
+    current_documents_by_id = {document.id: document for document in documents}
+    story_documents_by_id.update(current_documents_by_id)
+    documents = [story_documents_by_id[item_id] for item_id in sorted(story_documents_by_id)]
+    official_events, official_claims, official_evidence = extract_story_events(
+        story_consolidation.stories,
+        story_documents_by_id.values(),
+        started_at,
     )
     market_events, market_claims, market_evidence = extract_market_events(
         markets, universe["assets"], started_at
@@ -361,13 +384,13 @@ def _run_started_pipeline(
     )
     summary = build_deterministic_summary(markets, macro, events)
     logger.info(
-        "Collection complete documents=%d markets=%d macro=%d clusters=%d "
+        "Collection complete documents=%d markets=%d macro=%d stories=%d "
         "official_events=%d market_events=%d macro_events=%d total_events=%d "
         "driver_candidates=%d",
         len(documents),
         len(markets),
         len(macro),
-        len(clusters),
+        len(story_consolidation.stories),
         len(official_events),
         len(market_events),
         len(macro_events),
@@ -417,6 +440,8 @@ def _run_started_pipeline(
     )
 
     store.save_documents(run_id, documents)
+    store.save_stories(run_id, story_consolidation.stories)
+    store.save_story_memberships(story_consolidation.memberships)
     store.save_evidence(run_id, evidence)
     store.save_claims(run_id, claims)
     store.save_events(run_id, events)
@@ -575,6 +600,7 @@ def _run_started_pipeline(
         "report_path": str(report_path),
         "email_status": email_status,
         "elapsed_seconds": elapsed_seconds,
+        "story_consolidation": story_consolidation.diagnostics,
     }
     logger.info(
         "Pipeline completed run_id=%s report_path=%s email_status=%s elapsed_seconds=%.3f",

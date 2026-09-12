@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -23,6 +24,7 @@ from radar.domain import (
     SourceDocument,
     SourceKind,
     SourceTier,
+    Story,
     content_hash,
     stable_id,
 )
@@ -30,7 +32,6 @@ from radar.explanation import (
     build_macro_observation_evidence,
     build_market_observation_evidence,
 )
-from radar.ingestion import canonicalize_source_url as canonicalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -104,37 +105,6 @@ NOTABLE_MARKET_IMPORTANCE = 55.0
 HIGH_MARKET_IMPORTANCE = 75.0
 
 
-def normalize_title(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", title.casefold()).strip()
-
-
-def title_similarity(left: str, right: str) -> float:
-    a, b = set(normalize_title(left).split()), set(normalize_title(right).split())
-    return len(a & b) / len(a | b) if a and b else 0.0
-
-
-def cluster_documents(documents: list[SourceDocument]) -> list[list[SourceDocument]]:
-    exact_seen: set[tuple[str, str]] = set()
-    unique: list[SourceDocument] = []
-    for document in sorted(documents, key=lambda item: item.published_at, reverse=True):
-        key = (canonicalize_url(document.canonical_url), document.content_hash)
-        if key not in exact_seen:
-            exact_seen.add(key)
-            unique.append(document)
-
-    clusters: list[list[SourceDocument]] = []
-    for document in unique:
-        for cluster in clusters:
-            anchor = cluster[0]
-            hours = abs((document.published_at - anchor.published_at).total_seconds()) / 3600
-            if hours <= 72 and title_similarity(document.title, anchor.title) >= 0.68:
-                cluster.append(document)
-                break
-        else:
-            clusters.append([document])
-    return clusters
-
-
 def classify_event(text: str) -> EventType:
     lowered = text.casefold()
     for event_type, keywords in EVENT_RULES:
@@ -159,80 +129,122 @@ def extract_entities(text: str, entity_config: list[dict[str, Any]]) -> list[str
     return sorted(set(result))
 
 
-def extract_events(
-    clusters: list[list[SourceDocument]], entity_config: list[dict[str, Any]], now: datetime
+def extract_story_events(
+    stories: Iterable[Story],
+    documents: Iterable[SourceDocument],
+    now: datetime,
 ) -> tuple[list[Event], list[Claim], list[Evidence]]:
+    """Project persistent Stories into Events with document-scoped provenance."""
+    documents_by_id: dict[str, SourceDocument] = {}
+    for document in documents:
+        existing = documents_by_id.get(document.id)
+        if existing is not None and existing != document:
+            raise ValueError(f"Conflicting SourceDocument payload for {document.id}")
+        documents_by_id.setdefault(document.id, document)
+
     events: list[Event] = []
-    claims: list[Claim] = []
-    evidence_items: list[Evidence] = []
-    for cluster in clusters:
-        anchor = sorted(cluster, key=lambda item: (item.source_tier.value, item.published_at))[0]
-        combined = " ".join(f"{item.title} {item.content}" for item in cluster)
-        event_type = classify_event(combined)
-        entities = extract_entities(combined, entity_config)
-        evidence_ids: list[str] = []
-        for document in cluster:
+    claims_by_id: dict[str, Claim] = {}
+    evidence_by_id: dict[str, Evidence] = {}
+    for story in sorted(stories, key=lambda item: item.id):
+        missing = [
+            document_id
+            for document_id in story.source_document_ids
+            if document_id not in documents_by_id
+        ]
+        if missing:
+            raise ValueError(
+                "Story Event projection is missing SourceDocument: "
+                + ", ".join(missing)
+            )
+        members = [documents_by_id[document_id] for document_id in story.source_document_ids]
+        presentation = documents_by_id[story.presentation_document_id]
+        event_claim_ids: list[str] = []
+        event_evidence_ids: list[str] = []
+        for document in members:
             excerpt = (document.content or document.title)[:500]
             evidence_id = stable_id("evidence", f"{document.id}|{content_hash(excerpt)}")
-            evidence_items.append(
-                Evidence(
-                    id=evidence_id,
-                    source_kind=SourceKind.DOCUMENT,
-                    source_id=document.id,
-                    source_document_id=document.id,
-                    locator={"type": "rss_or_provider_record", "title": document.title},
-                    excerpt=excerpt,
-                    checksum=content_hash(excerpt),
-                    quality_score={
-                        SourceTier.A: 1.0,
-                        SourceTier.B: 0.8,
-                        SourceTier.C: 0.6,
-                        SourceTier.D: 0.3,
-                    }[document.source_tier],
-                )
+            evidence = Evidence(
+                id=evidence_id,
+                source_kind=SourceKind.DOCUMENT,
+                source_id=document.id,
+                source_document_id=document.id,
+                locator={"type": "rss_or_provider_record", "title": document.title},
+                excerpt=excerpt,
+                checksum=content_hash(excerpt),
+                quality_score={
+                    SourceTier.A: 1.0,
+                    SourceTier.B: 0.8,
+                    SourceTier.C: 0.6,
+                    SourceTier.D: 0.3,
+                }[document.source_tier],
             )
-            evidence_ids.append(evidence_id)
-        event_key = content_hash(normalize_title(anchor.title))[:24]
-        claim_id = stable_id("claim", event_key)
-        claims.append(
-            Claim(
+            existing_evidence = evidence_by_id.get(evidence_id)
+            if existing_evidence is not None and existing_evidence != evidence:
+                raise ValueError(f"Conflicting Evidence payload for {evidence_id}")
+            evidence_by_id.setdefault(evidence_id, evidence)
+            claim_id = stable_id(
+                "claim", f"story-v1|document|{document.id}"
+            )
+            claim = Claim(
                 id=claim_id,
                 claim_type=ClaimType.FACT,
-                text=anchor.title,
-                evidence_ids=evidence_ids,
-                confidence=min(0.98, 0.68 + 0.1 * len({d.publisher for d in cluster})),
-                as_of=anchor.published_at,
+                text=document.title,
+                evidence_ids=[evidence_id],
+                confidence=0.78,
+                as_of=document.published_at,
             )
+            existing_claim = claims_by_id.get(claim_id)
+            if existing_claim is not None and existing_claim != claim:
+                raise ValueError(f"Conflicting Claim payload for {claim_id}")
+            claims_by_id.setdefault(claim_id, claim)
+            event_claim_ids.append(claim_id)
+            event_evidence_ids.append(evidence_id)
+
+        age_hours = max(
+            0.0,
+            (
+                now.astimezone(UTC) - story.earliest_trusted_published_at
+            ).total_seconds()
+            / 3600,
         )
-        age_hours = max(0.0, (now.astimezone(UTC) - anchor.published_at).total_seconds() / 3600)
         components = {
-            "source_quality": TIER_POINTS[min(d.source_tier for d in cluster)],
-            "materiality": TYPE_POINTS[event_type],
-            "corroboration": min(14.0, 7.0 * (len({d.publisher for d in cluster}) - 1)),
-            "watchlist_relevance": min(18.0, 9.0 * len(entities)),
+            "source_quality": TIER_POINTS[min(item.source_tier for item in members)],
+            "materiality": TYPE_POINTS[story.event_type],
+            "corroboration": min(
+                14.0, 7.0 * (len({item.publisher for item in members}) - 1)
+            ),
+            "watchlist_relevance": min(18.0, 9.0 * len(story.canonical_entity_ids)),
             "freshness": max(0.0, 14.0 - age_hours / 4),
         }
-        importance = round(min(100.0, sum(components.values())), 1)
         events.append(
             Event(
-                id=stable_id("event", event_key),
-                event_key=event_key,
-                event_type=event_type,
-                title=anchor.title,
-                occurred_at=anchor.published_at,
-                first_seen_at=min(d.collected_at for d in cluster),
-                last_seen_at=max(d.collected_at for d in cluster),
-                entity_ids=entities,
-                claim_ids=[claim_id],
-                evidence_ids=evidence_ids,
-                source_document_ids=[d.id for d in cluster],
-                importance_score=importance,
-                importance_components={key: round(value, 1) for key, value in components.items()},
-                confidence=min(0.98, 0.65 + 0.1 * len({d.publisher for d in cluster})),
-                is_demo=any(d.is_demo for d in cluster),
+                id=stable_id("event", story.id),
+                event_key=f"story:{story.id}",
+                event_type=story.event_type,
+                title=presentation.title,
+                occurred_at=story.earliest_trusted_published_at,
+                first_seen_at=story.first_seen_at,
+                last_seen_at=story.last_seen_at,
+                entity_ids=list(story.canonical_entity_ids),
+                claim_ids=sorted(set(event_claim_ids)),
+                evidence_ids=sorted(set(event_evidence_ids)),
+                source_document_ids=list(story.source_document_ids),
+                importance_score=round(min(100.0, sum(components.values())), 1),
+                importance_components={
+                    key: round(value, 1) for key, value in components.items()
+                },
+                confidence=min(
+                    0.98, 0.65 + 0.1 * len({item.publisher for item in members})
+                ),
+                is_demo=any(item.is_demo for item in members),
             )
         )
-    ranked = sorted(events, key=lambda item: item.importance_score, reverse=True)
+    ranked = sorted(
+        events,
+        key=lambda item: (-item.importance_score, item.id),
+    )
+    claims = [claims_by_id[item_id] for item_id in sorted(claims_by_id)]
+    evidence_items = [evidence_by_id[item_id] for item_id in sorted(evidence_by_id)]
     return ranked, claims, evidence_items
 
 

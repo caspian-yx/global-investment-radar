@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from radar.config import Settings, load_universe
-from radar.deterministic import cluster_documents, extract_events
+from radar.deterministic import extract_story_events
 from radar.domain import (
     CollectionBatch,
     EventType,
@@ -27,6 +27,7 @@ from radar.providers import (
     YahooChartProvider,
     build_providers,
 )
+from radar.story import consolidate_stories
 
 FIXTURES = Path(__file__).parent / "fixtures"
 APPLE = {"cik": "0000320193", "name": "Apple Inc."}
@@ -443,9 +444,10 @@ def test_approved_source_families_enter_provider_neutral_event_extraction() -> N
         )
 
     normalized = deduplicate_source_documents(documents).documents
-    events, _, _ = extract_events(
-        cluster_documents(normalized),
-        universe["entities"],
+    consolidated = consolidate_stories(normalized, universe["entities"], now=now)
+    events, _, _ = extract_story_events(
+        consolidated.stories,
+        normalized,
         now,
     )
     event_types = {event.title: event.event_type for event in events}

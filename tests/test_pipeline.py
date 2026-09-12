@@ -39,6 +39,8 @@ from radar.storage import (
     reports_table,
     runs,
     source_documents,
+    stories_table,
+    story_documents_table,
 )
 
 
@@ -256,6 +258,115 @@ def test_pipeline_is_idempotent_for_same_business_day(tmp_path) -> None:
     assert store.table_count(source_documents) == 5
     assert store.table_count(events_table) == 5
     assert store.table_count(reports_table) == 1
+
+
+def test_pipeline_persists_story_identity_and_attaches_later_source(
+    tmp_path, monkeypatch
+) -> None:
+    first_now = datetime(2026, 9, 12, 9, tzinfo=UTC)
+    second_now = first_now + timedelta(hours=3)
+    secondary = make_document(
+        provider="news-secondary",
+        tier=SourceTier.B,
+        publisher="Independent News",
+        url="https://news.example/nvidia-blackwell",
+        title="NVIDIA launches Blackwell platform for enterprise AI",
+        content="NVIDIA launched the Blackwell product for enterprise data centers.",
+        published_at=first_now - timedelta(hours=2),
+        collected_at=first_now,
+        region="US",
+        source_category=SourceCategory.PROFESSIONAL_NEWS,
+        source_role=SourceRole.SECONDARY,
+    )
+    primary = make_document(
+        provider="nvidia-primary",
+        tier=SourceTier.A,
+        publisher="NVIDIA",
+        url="https://nvidia.example/blackwell-enterprise",
+        title="NVIDIA launches Blackwell enterprise AI platform",
+        content="NVIDIA launched the Blackwell product for enterprise data centers.",
+        published_at=first_now - timedelta(hours=3),
+        collected_at=second_now,
+        region="US",
+        source_category=SourceCategory.COMPANY_PRIMARY,
+        source_role=SourceRole.PRIMARY,
+    )
+    demo = DemoProvider().collect(first_now)
+    batches = iter(
+        [
+            CollectionBatch(
+                provider="story-first",
+                documents=[secondary],
+                markets=demo.markets,
+                macro=demo.macro,
+                diagnostics={"market_items_expected": 8, "market_items_collected": 8},
+            ),
+            CollectionBatch(
+                provider="story-second",
+                documents=[primary],
+                markets=demo.markets,
+                macro=demo.macro,
+                diagnostics={"market_items_expected": 8, "market_items_collected": 8},
+            ),
+        ]
+    )
+
+    def providers(settings, universe):
+        _ = settings, universe
+        return [StaticProvider(next(batches))]
+
+    monkeypatch.setattr("radar.pipeline.build_providers", providers)
+    settings = Settings(
+        app_env="test",
+        data_mode="live",
+        database_url=f"sqlite:///{(tmp_path / 'persistent-story.db').as_posix()}",
+        report_output_dir=tmp_path / "reports",
+        ai_enabled=False,
+        email_mode="disabled",
+    )
+
+    first_result = run_daily(settings, now=first_now)
+    store = RadarStore(settings.database_url)
+    with store.engine.connect() as connection:
+        first_story = json.loads(
+            connection.execute(select(stories_table.c.payload_json)).scalar_one()
+        )
+        first_event = json.loads(
+            connection.execute(
+                select(events_table.c.payload_json).where(
+                    events_table.c.event_key.like("story:%")
+                )
+            ).scalar_one()
+        )
+
+    second_result = run_daily(settings, now=second_now)
+    with store.engine.connect() as connection:
+        second_story = json.loads(
+            connection.execute(select(stories_table.c.payload_json)).scalar_one()
+        )
+        second_event = json.loads(
+            connection.execute(
+                select(events_table.c.payload_json).where(
+                    events_table.c.event_key.like("story:%")
+                )
+            ).scalar_one()
+        )
+        details = json.loads(
+            connection.execute(select(runs.c.details_json)).scalar_one()
+        )
+
+    assert first_result.official_events == second_result.official_events == 1
+    assert second_result.documents == 2
+    assert store.table_count(stories_table) == 1
+    assert store.table_count(story_documents_table) == 2
+    assert second_story["id"] == first_story["id"]
+    assert second_story["identity_seed_document_id"] == secondary.id
+    assert second_story["presentation_document_id"] == primary.id
+    assert second_event["id"] == first_event["id"]
+    assert second_event["title"] == primary.title
+    assert second_event["source_document_ids"] == sorted([primary.id, secondary.id])
+    assert details["story_consolidation"]["documents_attached_to_existing_stories"] == 1
+    assert details["story_consolidation"]["rule_version"] == "story-v1"
 
 
 def test_fake_llm_is_visibly_marked(tmp_path) -> None:

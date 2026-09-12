@@ -14,15 +14,23 @@ from radar.domain import (
     DriverTemporalRelation,
     Evidence,
     MacroObservation,
+    SourceCategory,
     SourceKind,
+    SourceRole,
+    SourceTier,
 )
 from radar.explanation import build_macro_backdrop
+from radar.providers import make_document
 from radar.storage import (
     DRIVER_CANDIDATE_MIGRATION,
+    STORY_CONSOLIDATION_MIGRATION,
     RadarStore,
     driver_candidates_table,
     evidence_table,
+    stories_table,
+    story_documents_table,
 )
+from radar.story import consolidate_stories
 
 
 def evidence(
@@ -372,7 +380,11 @@ def test_exact_c1_database_upgrades_additively_to_driver_schema(tmp_path) -> Non
             connection.execute(text("SELECT version FROM schema_migrations")).scalars()
         )
     assert sentinel == [("one", "preserve me")]
-    assert versions == {"001_c1_evidence_provenance", DRIVER_CANDIDATE_MIGRATION}
+    assert versions == {
+        "001_c1_evidence_provenance",
+        DRIVER_CANDIDATE_MIGRATION,
+        STORY_CONSOLIDATION_MIGRATION,
+    }
 
 
 def test_driver_migration_recovers_table_and_index_without_losing_rows(tmp_path) -> None:
@@ -576,3 +588,254 @@ def test_repeated_macro_period_reuses_persisted_first_observation(tmp_path) -> N
     )
     assert later_evidence[0].id == first_evidence[0].id
     assert later_claims[0].id == first_claims[0].id
+
+
+def _story_document(
+    *,
+    provider: str = "nvidia-primary",
+    url: str = "https://example.test/nvidia-launch",
+    title: str = "NVIDIA launches Blackwell AI product",
+    collected_at: datetime = datetime(2026, 9, 12, 8, tzinfo=UTC),
+):
+    return make_document(
+        provider=provider,
+        tier=SourceTier.A,
+        publisher="NVIDIA",
+        url=url,
+        title=title,
+        content="NVIDIA launched the Blackwell artificial intelligence product.",
+        published_at=datetime(2026, 9, 12, 7, tzinfo=UTC),
+        collected_at=collected_at,
+        source_category=SourceCategory.COMPANY_PRIMARY,
+        source_role=SourceRole.PRIMARY,
+        region="US",
+    )
+
+
+def _story_bundle():
+    source = _story_document()
+    result = consolidate_stories(
+        [source],
+        [{"id": "nvidia", "aliases": ["nvidia"]}],
+        now=datetime(2026, 9, 12, 8, tzinfo=UTC),
+    )
+    return source, result.stories[0], result.memberships[0]
+
+
+def test_fresh_database_has_versioned_story_schema(tmp_path) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'fresh-story.db').as_posix()}")
+    store.initialize()
+
+    inspector = inspect(store.engine)
+    story_columns = {column["name"] for column in inspector.get_columns("stories")}
+    membership_columns = {
+        column["name"] for column in inspector.get_columns("story_documents")
+    }
+    membership_indexes = inspector.get_indexes("story_documents")
+    with store.engine.connect() as connection:
+        marker = connection.execute(
+            text("SELECT version FROM schema_migrations WHERE version = :version"),
+            {"version": STORY_CONSOLIDATION_MIGRATION},
+        ).scalar_one()
+
+    assert {
+        "id",
+        "identity_seed_document_id",
+        "presentation_document_id",
+        "rule_version",
+        "event_type",
+        "earliest_trusted_published_at",
+        "latest_published_at",
+        "first_seen_at",
+        "last_seen_at",
+        "payload_json",
+    } <= story_columns
+    assert {
+        "id",
+        "story_id",
+        "source_document_id",
+        "match_method",
+        "rule_version",
+        "first_linked_at",
+    } <= membership_columns
+    assert any(
+        index["column_names"] == ["source_document_id", "rule_version"]
+        and index["unique"]
+        for index in membership_indexes
+    )
+    assert marker == STORY_CONSOLIDATION_MIGRATION
+
+
+def test_story_migration_is_repeatable_and_preserves_legacy_events(tmp_path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'legacy-story.db').as_posix()}"
+    store = RadarStore(database_url)
+    store.initialize()
+    with store.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO events "
+                "(id, run_id, event_key, event_type, importance_score, payload_json, is_demo) "
+                "VALUES ('legacy-event', 'legacy-run', 'legacy-key', 'other', 1.0, '{}', 0)"
+            )
+        )
+        connection.execute(
+            text("DELETE FROM schema_migrations WHERE version = :version"),
+            {"version": STORY_CONSOLIDATION_MIGRATION},
+        )
+        connection.exec_driver_sql("DROP TABLE story_documents")
+        connection.exec_driver_sql("DROP TABLE stories")
+
+    store.initialize()
+    store.initialize()
+
+    with store.engine.connect() as connection:
+        legacy = connection.execute(
+            text("SELECT id, event_key FROM events WHERE id = 'legacy-event'")
+        ).one()
+        story_count = connection.execute(text("SELECT COUNT(*) FROM stories")).scalar_one()
+        marker_count = connection.execute(
+            text("SELECT COUNT(*) FROM schema_migrations WHERE version = :version"),
+            {"version": STORY_CONSOLIDATION_MIGRATION},
+        ).scalar_one()
+    assert legacy == ("legacy-event", "legacy-key")
+    assert story_count == 0
+    assert marker_count == 1
+
+
+def test_story_marker_cannot_hide_malformed_schema(tmp_path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'malformed-story.db').as_posix()}"
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE schema_migrations "
+            "(version VARCHAR(80) PRIMARY KEY, applied_at VARCHAR(40) NOT NULL)"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO schema_migrations (version, applied_at) "
+                "VALUES (:version, 'test')"
+            ),
+            {"version": STORY_CONSOLIDATION_MIGRATION},
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE stories (id VARCHAR(36) PRIMARY KEY, payload_json TEXT)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE story_documents "
+            "(id VARCHAR(36) PRIMARY KEY, source_document_id VARCHAR(36))"
+        )
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match="Story consolidation migration is incomplete"):
+        RadarStore(database_url).initialize()
+
+
+def test_story_marker_rejects_nullable_or_wrongly_typed_contract_columns(tmp_path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'malformed-story-types.db').as_posix()}"
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE schema_migrations "
+            "(version VARCHAR(80) PRIMARY KEY, applied_at VARCHAR(40) NOT NULL)"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO schema_migrations (version, applied_at) "
+                "VALUES (:version, 'test')"
+            ),
+            {"version": STORY_CONSOLIDATION_MIGRATION},
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE stories ("
+            "id VARCHAR(36) PRIMARY KEY, created_run_id VARCHAR(36), "
+            "last_run_id VARCHAR(36), identity_seed_document_id INTEGER, "
+            "presentation_document_id VARCHAR(36), rule_version VARCHAR(40), "
+            "event_type VARCHAR(40), earliest_trusted_published_at DATETIME, "
+            "latest_published_at DATETIME, first_seen_at DATETIME, "
+            "last_seen_at DATETIME, payload_json TEXT)"
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX ux_stories_identity_seed_rule "
+            "ON stories (identity_seed_document_id, rule_version)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE story_documents ("
+            "id VARCHAR(36) PRIMARY KEY, story_id VARCHAR(36), "
+            "source_document_id VARCHAR(36), match_method VARCHAR(48), "
+            "rule_version VARCHAR(40), first_linked_at DATETIME, payload_json TEXT)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX ix_story_documents_story_id ON story_documents (story_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX ux_story_documents_source_rule "
+            "ON story_documents (source_document_id, rule_version)"
+        )
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match="Story consolidation migration is incomplete"):
+        RadarStore(database_url).initialize()
+
+
+def test_story_and_membership_round_trip_with_source_documents(tmp_path) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'story-round-trip.db').as_posix()}")
+    store.initialize()
+    source, story_item, membership_item = _story_bundle()
+
+    store.save_documents("run-1", [source])
+    store.save_stories("run-1", [story_item])
+    store.save_story_memberships([membership_item])
+
+    assert store.load_stories("story-v1") == [story_item]
+    assert store.load_story_memberships("story-v1") == [membership_item]
+    assert store.load_source_documents([source.id]) == [source]
+    assert store.table_count(stories_table) == 1
+    assert store.table_count(story_documents_table) == 1
+
+
+def test_story_identity_is_immutable_during_upsert(tmp_path) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'immutable-story.db').as_posix()}")
+    store.initialize()
+    source, story_item, _ = _story_bundle()
+    store.save_documents("run-1", [source])
+    store.save_stories("run-1", [story_item])
+
+    conflicting = story_item.model_copy(
+        update={"identity_seed_document_id": "different-document"}
+    )
+    with pytest.raises(ValueError, match="immutable identity"):
+        store.save_stories("run-2", [conflicting])
+
+
+def test_source_document_cannot_belong_to_two_story_v1_stories(tmp_path) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'unique-membership.db').as_posix()}")
+    store.initialize()
+    source, story_item, membership_item = _story_bundle()
+    store.save_documents("run-1", [source])
+    store.save_stories("run-1", [story_item])
+    store.save_story_memberships([membership_item])
+
+    conflicting = membership_item.model_copy(
+        update={"id": "different-membership", "story_id": "different-story"}
+    )
+    with pytest.raises(ValueError, match="multiple story-v1 Stories"):
+        store.save_story_memberships([conflicting])
+
+
+def test_story_persistence_rejects_missing_document_closure(tmp_path) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'missing-story-document.db').as_posix()}")
+    store.initialize()
+    _, story_item, _ = _story_bundle()
+
+    with pytest.raises(ValueError, match="missing SourceDocument"):
+        store.save_stories("run-1", [story_item])
+
+
+def test_story_membership_rejects_missing_story(tmp_path) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'orphan-membership.db').as_posix()}")
+    store.initialize()
+    source, _, membership_item = _story_bundle()
+    store.save_documents("run-1", [source])
+
+    with pytest.raises(ValueError, match="missing Story"):
+        store.save_story_memberships([membership_item])

@@ -98,9 +98,31 @@ database migration is performed. Future cursor, `since`, ETag and Last-Modified 
 added at the provider boundary without changing deterministic downstream contracts.
 
 After provider collection, exact document IDs and exact canonical URLs are deduplicated before
-story clustering. Conflicting payloads under one ID fail closed; cross-provider URL duplicates
+Story consolidation. Conflicting payloads under one ID fail closed; cross-provider URL duplicates
 prefer direct primary and higher-quality sources through a stable total order. C5.2 deliberately
 does not merge similar titles or inferred stories at ingestion time.
+
+## Persistent Story consolidation
+
+After exact ingestion deduplication, C6.3 derives a provider-neutral semantic profile for each
+document and evaluates it against persistent `story-v1` identity seeds. Three conservative paths
+cover near-identical titles, entity/event/action agreement, and structured policy or macro release
+identity. Event type, explicit region, authority, release-domain/reference-period, action, and
+strict same-dimension numeric conflicts reject a match before any positive path runs. `OTHER`
+documents remain singleton unless their normalized story identity is exceptionally strong.
+
+Story matching is deterministic and does not use provider metadata, embeddings, translation, an
+LLM, or transitive fuzzy unions. Ambiguous candidates fail closed into separate Stories. The
+identity seed and Story/Event IDs remain immutable; a later primary or higher-quality source may
+become the presentation anchor without rewriting identity. Different bootstrap histories can
+still produce different initial Story IDs, an intentional tradeoff that avoids unsafe automatic
+Story-to-Story merging.
+
+Migration `003_c6_3_story_consolidation` adds `stories` and `story_documents` without rewriting
+historical Events. Every Story member keeps its own `SourceDocument → Evidence → FACT Claim`
+chain, and the projected Event references the exact sorted closure. Story occurrence uses the
+earliest Tier A/B publication when available; later corroboration cannot move occurrence later,
+and C2 continues to evaluate each evidence document's own publication time.
 
 HKMA remains deferred because its current feed exposes date-level publication precision.
 GDELT and commercial media feeds remain deferred until rate limits, timestamp semantics and

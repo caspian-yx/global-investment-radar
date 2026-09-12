@@ -134,6 +134,117 @@ class EventType(StrEnum):
     OTHER = "other"
 
 
+class DocumentStoryProfile(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    document_id: str = Field(min_length=1, pattern=r".*\S.*")
+    event_type: EventType
+    canonical_entity_ids: tuple[str, ...]
+    topics: tuple[Topic, ...]
+    region: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
+    published_at: datetime
+    normalized_title_tokens: tuple[str, ...]
+    action_terms: tuple[str, ...]
+    strict_numeric_facts: tuple[str, ...]
+    authority_id: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
+    release_domain: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
+    reference_period: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
+    source_category: SourceCategory
+    source_role: SourceRole
+    source_tier: SourceTier
+
+    @field_validator("published_at")
+    @classmethod
+    def normalize_profile_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("story profile timestamp must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_canonical_profile_values(self) -> DocumentStoryProfile:
+        values = (
+            self.canonical_entity_ids,
+            self.topics,
+            self.normalized_title_tokens,
+            self.action_terms,
+            self.strict_numeric_facts,
+        )
+        if any(tuple(sorted(set(items))) != items for items in values):
+            raise ValueError("story profile collections must be canonical")
+        return self
+
+
+class Story(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    id: str = Field(min_length=1, pattern=r".*\S.*")
+    identity_seed_document_id: str = Field(min_length=1, pattern=r".*\S.*")
+    identity_profile: DocumentStoryProfile
+    presentation_document_id: str = Field(min_length=1, pattern=r".*\S.*")
+    event_type: EventType
+    canonical_entity_ids: tuple[str, ...]
+    topics: tuple[Topic, ...]
+    region: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
+    source_document_ids: tuple[str, ...] = Field(min_length=1)
+    earliest_trusted_published_at: datetime
+    latest_published_at: datetime
+    first_seen_at: datetime
+    last_seen_at: datetime
+    rule_version: str = Field(min_length=1, pattern=r".*\S.*")
+
+    @field_validator(
+        "earliest_trusted_published_at",
+        "latest_published_at",
+        "first_seen_at",
+        "last_seen_at",
+    )
+    @classmethod
+    def normalize_story_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("story timestamp must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_story_contract(self) -> Story:
+        if self.identity_profile.document_id != self.identity_seed_document_id:
+            raise ValueError("Story identity seed must match its immutable profile")
+        if self.identity_seed_document_id not in self.source_document_ids:
+            raise ValueError("Story identity seed must remain in its document closure")
+        if self.presentation_document_id not in self.source_document_ids:
+            raise ValueError("Story presentation document must be in its document closure")
+        if self.event_type is not self.identity_profile.event_type:
+            raise ValueError("Story EventType must match its immutable identity profile")
+        if tuple(sorted(set(self.canonical_entity_ids))) != self.canonical_entity_ids:
+            raise ValueError("Story entity IDs must be canonical")
+        if tuple(sorted(set(self.topics))) != self.topics:
+            raise ValueError("Story topics must be canonical")
+        if tuple(sorted(set(self.source_document_ids))) != self.source_document_ids:
+            raise ValueError("Story document closure must be canonical")
+        if self.earliest_trusted_published_at > self.latest_published_at:
+            raise ValueError("Story publication times are inconsistent")
+        if self.first_seen_at > self.last_seen_at:
+            raise ValueError("Story seen times are inconsistent")
+        return self
+
+
+class StoryDocumentMembership(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    id: str = Field(min_length=1, pattern=r".*\S.*")
+    story_id: str = Field(min_length=1, pattern=r".*\S.*")
+    source_document_id: str = Field(min_length=1, pattern=r".*\S.*")
+    match_method: str = Field(min_length=1, pattern=r".*\S.*")
+    rule_version: str = Field(min_length=1, pattern=r".*\S.*")
+    first_linked_at: datetime
+
+    @field_validator("first_linked_at")
+    @classmethod
+    def normalize_membership_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Story membership timestamp must be timezone-aware")
+        return value.astimezone(UTC)
+
+
 class SourceDocument(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
