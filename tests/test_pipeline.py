@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 from typer.testing import CliRunner
 
+from radar.briefing import C9_RULE_VERSION, DailyIntelligenceBrief, ExplanationBasis
 from radar.cli import app
 from radar.config import Settings
 from radar.domain import (
@@ -122,7 +123,7 @@ def test_no_ai_demo_pipeline_generates_html(tmp_path, monkeypatch) -> None:
     )
     result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
-    report = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html")
+    report = tmp_path / "reports" / "global-investment-radar-2026-09-07.html"
     assert result.report_path == str(report)
     assert result.ai_status == "disabled"
     assert result.documents == 5
@@ -135,11 +136,9 @@ def test_no_ai_demo_pipeline_generates_html(tmp_path, monkeypatch) -> None:
     assert result.quality_status is ReportQualityStatus.HEALTHY
     html = report.read_text(encoding="utf-8")
     assert "DEMO DATA" in html
-    assert "AI analysis is disabled" in html
-    assert "Top Global Events" in html
-    assert "Data Coverage" in html
-    assert "Missing Data" in html
-    assert "Freshness" in html
+    assert "AI is off" in html
+    assert "Things That Matter" in html
+    assert "Sources &amp; Data Quality" in html
     assert "Radar macro backdrop: U.S. 10Y Treasury Yield" not in html
     assert transitions == ["completed"]
 
@@ -217,9 +216,7 @@ def test_pipeline_deduplicates_exact_canonical_url_before_story_clustering(
     settings = Settings(
         app_env="test",
         data_mode="live",
-        database_url=(
-            f"sqlite:///{(tmp_path / f'dedupe-{reverse_provider_order}.db').as_posix()}"
-        ),
+        database_url=(f"sqlite:///{(tmp_path / f'dedupe-{reverse_provider_order}.db').as_posix()}"),
         report_output_dir=tmp_path / f"reports-{reverse_provider_order}",
         ai_enabled=False,
         email_mode="disabled",
@@ -260,9 +257,7 @@ def test_pipeline_is_idempotent_for_same_business_day(tmp_path) -> None:
     assert store.table_count(reports_table) == 1
 
 
-def test_pipeline_persists_story_identity_and_attaches_later_source(
-    tmp_path, monkeypatch
-) -> None:
+def test_pipeline_persists_story_identity_and_attaches_later_source(tmp_path, monkeypatch) -> None:
     first_now = datetime(2026, 9, 12, 9, tzinfo=UTC)
     second_now = first_now + timedelta(hours=3)
     secondary = make_document(
@@ -333,9 +328,7 @@ def test_pipeline_persists_story_identity_and_attaches_later_source(
         )
         first_event = json.loads(
             connection.execute(
-                select(events_table.c.payload_json).where(
-                    events_table.c.event_key.like("story:%")
-                )
+                select(events_table.c.payload_json).where(events_table.c.event_key.like("story:%"))
             ).scalar_one()
         )
 
@@ -346,14 +339,10 @@ def test_pipeline_persists_story_identity_and_attaches_later_source(
         )
         second_event = json.loads(
             connection.execute(
-                select(events_table.c.payload_json).where(
-                    events_table.c.event_key.like("story:%")
-                )
+                select(events_table.c.payload_json).where(events_table.c.event_key.like("story:%"))
             ).scalar_one()
         )
-        details = json.loads(
-            connection.execute(select(runs.c.details_json)).scalar_one()
-        )
+        details = json.loads(connection.execute(select(runs.c.details_json)).scalar_one())
 
     assert first_result.official_events == second_result.official_events == 1
     assert second_result.documents == 2
@@ -385,7 +374,7 @@ def test_fake_llm_is_visibly_marked(tmp_path) -> None:
     )
     assert result.ai_status == "test-data"
     assert "TEST AI OUTPUT" in html
-    assert "FakeLLMProvider" in html
+    assert "Any AI-assisted prose is synthetic" in html
 
 
 def test_fake_llm_is_blocked_in_production(tmp_path) -> None:
@@ -432,34 +421,46 @@ def test_ai_status_resolver_distinguishes_disabled_success_partial_and_failure()
             ),
         )
 
-    assert _resolve_ai_status(
-        disabled,
-        enrichment(attempted=0, succeeded=0, failed=0),
-        [],
-        has_bundles=False,
-        provider_available=False,
-    ) == "disabled"
-    assert _resolve_ai_status(
-        enabled,
-        enrichment(attempted=1, succeeded=1, failed=0),
-        [],
-        has_bundles=True,
-        provider_available=True,
-    ) == "enabled"
-    assert _resolve_ai_status(
-        enabled,
-        enrichment(attempted=2, succeeded=1, failed=1),
-        [],
-        has_bundles=True,
-        provider_available=True,
-    ) == "partial"
-    assert _resolve_ai_status(
-        enabled,
-        enrichment(attempted=1, succeeded=0, failed=1),
-        [],
-        has_bundles=True,
-        provider_available=True,
-    ) == "failed"
+    assert (
+        _resolve_ai_status(
+            disabled,
+            enrichment(attempted=0, succeeded=0, failed=0),
+            [],
+            has_bundles=False,
+            provider_available=False,
+        )
+        == "disabled"
+    )
+    assert (
+        _resolve_ai_status(
+            enabled,
+            enrichment(attempted=1, succeeded=1, failed=0),
+            [],
+            has_bundles=True,
+            provider_available=True,
+        )
+        == "enabled"
+    )
+    assert (
+        _resolve_ai_status(
+            enabled,
+            enrichment(attempted=2, succeeded=1, failed=1),
+            [],
+            has_bundles=True,
+            provider_available=True,
+        )
+        == "partial"
+    )
+    assert (
+        _resolve_ai_status(
+            enabled,
+            enrichment(attempted=1, succeeded=0, failed=1),
+            [],
+            has_bundles=True,
+            provider_available=True,
+        )
+        == "failed"
+    )
 
 
 def test_business_timezone_controls_report_date(tmp_path) -> None:
@@ -588,9 +589,9 @@ def test_no_official_items_does_not_make_supported_report_insufficient(
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
-    assert "No evidence-backed driver identified." in html
-    assert "Macro backdrop" in html
-    assert "Cross-asset context" not in html
+    assert "No strong Story met today’s primary threshold" in html
+    assert "Market Snapshot" in html
+    assert "No validated linked reaction is available" in html
 
 
 def test_insufficient_data_generates_diagnostic_report_and_exits_nonzero(
@@ -601,9 +602,7 @@ def test_insufficient_data_generates_diagnostic_report_and_exits_nonzero(
     monkeypatch.setattr(
         "radar.pipeline.build_providers",
         lambda settings, universe: [
-            StaticProvider(
-                CollectionBatch(provider="official-rss", status=ProviderStatus.NO_DATA)
-            )
+            StaticProvider(CollectionBatch(provider="official-rss", status=ProviderStatus.NO_DATA))
         ],
     )
     settings = Settings(
@@ -640,14 +639,10 @@ def test_insufficient_data_uses_diagnostic_email_subject(tmp_path, monkeypatch) 
     monkeypatch.setattr(
         "radar.pipeline.build_providers",
         lambda settings, universe: [
-            StaticProvider(
-                CollectionBatch(provider="official-rss", status=ProviderStatus.NO_DATA)
-            )
+            StaticProvider(CollectionBatch(provider="official-rss", status=ProviderStatus.NO_DATA))
         ],
     )
-    monkeypatch.setattr(
-        "radar.pipeline.build_email_sender", lambda settings: CapturingSender()
-    )
+    monkeypatch.setattr("radar.pipeline.build_email_sender", lambda settings: CapturingSender())
     settings = Settings(
         app_env="test",
         data_mode="live",
@@ -668,9 +663,7 @@ def test_insufficient_data_returns_nonzero_from_cli(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(
         "radar.pipeline.build_providers",
         lambda settings, universe: [
-            StaticProvider(
-                CollectionBatch(provider="official-rss", status=ProviderStatus.NO_DATA)
-            )
+            StaticProvider(CollectionBatch(provider="official-rss", status=ProviderStatus.NO_DATA))
         ],
     )
     monkeypatch.setenv("APP_ENV", "test")
@@ -852,17 +845,12 @@ def test_pipeline_combines_official_market_and_macro_events_before_optional_llm(
         encoding="utf-8"
     )
     assert 'href="https://example.com/policy"' in html
-    assert "S&amp;P 500 (^GSPC)" in html
+    assert "S&amp;P 500" in html
+    assert "+2.00%" in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<script>alert(1)</script>" not in html
-    assert "Previous 100" in html
-    assert "Latest 102" in html
-    assert "+2.00%" in html
-    assert "test-market" in html
-    assert "CUUR0000SA0" in html
-    assert "2026-08" in html
-    assert "index points" in html
-    assert "first observed by Radar" in html
+    assert "Things That Matter" in html
+    assert "test-market" not in html
     assert 'href="test-market"' not in html
     assert 'href="bls-public-api"' not in html
 
@@ -951,13 +939,10 @@ def test_pipeline_routes_linked_macro_event_through_c6_and_unchanged_c2(
     driver = RadarStore(database_url).load_driver_candidates_for_target(
         stable_id("event", f"market:^GSPC:{market.observed_at.isoformat()}")
     )[0]
-    assert driver.candidate_event_id == stable_id(
-        "event", "macro:CUUR0000SA0:2026-08"
-    )
+    assert driver.candidate_event_id == stable_id("event", "macro:CUUR0000SA0:2026-08")
     assert (
         "C6 relationships evaluated=1 allowed=1 rejected=0 "
-        "rejected_by_reason={} allowed_by_channel={'MACROECONOMIC_RELEASE': 1}"
-        in caplog.text
+        "rejected_by_reason={} allowed_by_channel={'MACROECONOMIC_RELEASE': 1}" in caplog.text
     )
 
 
@@ -1014,12 +999,10 @@ def test_quiet_day_with_zero_events_is_a_valid_report(tmp_path, monkeypatch) -> 
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-09.html").read_text(
         encoding="utf-8"
     )
-    assert "No event passed the deterministic extraction stage." in html
+    assert "No strong Story met today’s primary threshold" in html
 
 
-def test_market_event_alone_does_not_supply_official_quality_support(
-    tmp_path, monkeypatch
-) -> None:
+def test_market_event_alone_does_not_supply_official_quality_support(tmp_path, monkeypatch) -> None:
     now = datetime(2026, 9, 9, 8, tzinfo=UTC)
     market = MarketObservation(
         id=stable_id("market", "unsupported|^GSPC|2026-09-09"),
@@ -1125,7 +1108,7 @@ def test_structured_ai_configuration_failure_keeps_deterministic_report(
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
-    assert "Top Global Events" in html
+    assert "Things That Matter" in html
     assert "AI explanation" not in html
 
 
@@ -1178,7 +1161,7 @@ def test_zero_ai_request_budget_uses_single_guarded_seam_and_keeps_report(
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
-    assert "Top Global Events" in html
+    assert "Things That Matter" in html
     assert "AI explanation" not in html
 
 
@@ -1229,9 +1212,7 @@ def test_c6_rejects_sec_ponzi_before_c2_and_empty_bundle_uses_zero_ai_requests(
     c2_candidate_event_ids: list[list[str]] = []
 
     def capture_c2(**kwargs):
-        c2_candidate_event_ids.append(
-            [item.id for item in kwargs["candidate_events"]]
-        )
+        c2_candidate_event_ids.append([item.id for item in kwargs["candidate_events"]])
         return build_c2(**kwargs)
 
     seam_results: list[AIEnrichmentResult] = []
@@ -1301,24 +1282,21 @@ def test_c6_rejects_sec_ponzi_before_c2_and_empty_bundle_uses_zero_ai_requests(
     assert provider_generate_calls == 0
     store = RadarStore(settings.database_url)
     with store.engine.connect() as connection:
-        interpretation_claim_ids = connection.execute(
-            select(claims_table.c.id).where(
-                claims_table.c.claim_type == "INTERPRETATION"
+        interpretation_claim_ids = (
+            connection.execute(
+                select(claims_table.c.id).where(claims_table.c.claim_type == "INTERPRETATION")
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert interpretation_claim_ids == []
-    bundles_by_target = rendered_context["explanation_bundles"]
-    assert isinstance(bundles_by_target, dict)
-    assert len(bundles_by_target) == 1
-    bundle = next(iter(bundles_by_target.values()))
-    assert bundle.driver_candidates == []
-    assert bundle.claims == []
-    assert bundle.evidence == []
+    brief = rendered_context["briefing"]
+    assert isinstance(brief, DailyIntelligenceBrief)
+    assert "explanation_bundles" not in rendered_context
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-11.html").read_text(
         encoding="utf-8"
     )
-    assert "No evidence-backed driver identified." in html
-    assert "Top Global Events" in html
+    assert "Things That Matter" in html
 
 
 def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
@@ -1387,22 +1365,20 @@ def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
 
     assert result.ai_status == "enabled"
     assert len(provider.requests) == 1
-    explanations = rendered_context["structured_explanations"]
-    assert isinstance(explanations, dict)
-    assert len(explanations) == 1
-    target_id, explanation = next(iter(explanations.items()))
-    assert target_id == explanation.target_event_id
+    brief = rendered_context["briefing"]
+    assert isinstance(brief, DailyIntelligenceBrief)
+    assert "structured_explanations" not in rendered_context
+    assert any(
+        item.explanation_basis is ExplanationBasis.STRUCTURED_AI for item in brief.primary_stories
+    )
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
-    assert f"Generated headline for {target_id}" in html
-    assert "AI explanation" in html
-    assert "AI analysis is disabled" not in html
+    assert "Generated explanation for" in html
+    assert "AI is off" not in html
 
 
-def test_deterministic_events_are_available_before_optional_llm(
-    tmp_path, monkeypatch
-) -> None:
+def test_deterministic_events_are_available_before_optional_llm(tmp_path, monkeypatch) -> None:
     seen_event_ids: list[str] = []
 
     class CapturingLLM:
@@ -1434,9 +1410,7 @@ def test_deterministic_events_are_available_before_optional_llm(
     assert len(set(seen_event_ids)) == result.events
 
 
-def test_llm_receives_isolated_copies_of_deterministic_artifacts(
-    tmp_path, monkeypatch
-) -> None:
+def test_llm_receives_isolated_copies_of_deterministic_artifacts(tmp_path, monkeypatch) -> None:
     class MutatingLLM:
         name = "mutating-llm"
 
@@ -1551,11 +1525,7 @@ def test_pipeline_persists_and_renders_evidence_backed_driver(tmp_path, monkeypa
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
         encoding="utf-8"
     )
-    assert "Possible drivers" in html
     assert "plausible candidate" in html
-    assert "MEDIUM" in html
-    assert "Prior" in html
-    assert "Strong Topic" in html
     assert 'href="https://example.com/rate-decision"' in html
     assert 'href="test-market"' not in html
     assert "Why it happened" not in html
@@ -1670,11 +1640,16 @@ def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatc
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
         encoding="utf-8"
     )
-    assert html.count("plausible candidate") == 2
-    assert "Confidence HIGH" in html
-    assert "Confidence LOW" in html
-    assert "Same Window Ambiguous" in html
-    assert "Macro backdrop" in html
+    brief = RadarStore(settings.database_url).load_daily_briefing(
+        result.run_id, "global", C9_RULE_VERSION
+    )
+    assert brief is not None
+    assert (
+        sum(
+            item.explanation_basis is ExplanationBasis.C2_EVIDENCE for item in brief.primary_stories
+        )
+        == 2
+    )
     assert "inflation pressures &amp; context" in html
     assert "inflation pressures & context" not in html
 
@@ -1760,23 +1735,19 @@ def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch)
 
     assert result.driver_candidates == 2
     assert "driver_candidates" not in rendered_context
-    bundles_by_target = rendered_context["explanation_bundles"]
-    assert isinstance(bundles_by_target, dict)
-    assert len(bundles_by_target) == 1
-    bundle = next(iter(bundles_by_target.values()))
-    assert [item.confidence for item in bundle.driver_candidates] == [
+    with RadarStore(settings.database_url).engine.connect() as connection:
+        target_event_id = connection.execute(
+            select(events_table.c.id).where(events_table.c.event_type == "market_move")
+        ).scalar_one()
+    loaded = RadarStore(settings.database_url).load_driver_candidates_for_target(target_event_id)
+    assert [item.confidence for item in loaded] == [
         DriverConfidence.MEDIUM,
         DriverConfidence.HIGH,
     ]
-    html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
-        encoding="utf-8"
-    )
-    assert html.index("Confidence MEDIUM") < html.index("Confidence HIGH")
+    assert isinstance(rendered_context["briefing"], DailyIntelligenceBrief)
 
 
-def test_report_renders_context_only_for_vix_and_equity_weakness(
-    tmp_path, monkeypatch
-) -> None:
+def test_report_renders_context_only_for_vix_and_equity_weakness(tmp_path, monkeypatch) -> None:
     now = datetime(2026, 9, 9, 20, tzinfo=UTC)
     specifications = [
         ("^GSPC", "S&P 500", -2.0),
@@ -1824,8 +1795,7 @@ def test_report_renders_context_only_for_vix_and_equity_weakness(
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
         encoding="utf-8"
     )
-    assert "Cross-asset context" in html
-    assert "US equity breadth context" in html
-    assert "US equity weakness and a rising VIX" in html
-    assert "Macro backdrop" not in html
-    assert "No evidence-backed driver identified." in html
+    assert "Market Snapshot" in html
+    assert "VIX" in html
+    assert "No strong Story met today’s primary threshold" in html
+    assert "No watch item was inferred" in html

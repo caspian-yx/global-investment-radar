@@ -29,7 +29,7 @@ def test_pipeline_persists_all_view_scores_and_renders_selected_view(tmp_path) -
     assert len(selected) == result.events
     assert len(global_scores) == result.events
     assert [item.priority_rank for item in selected] == list(range(1, result.events + 1))
-    assert "Priority" in html
+    assert "Things That Matter" in html
     assert "AI / Semiconductors" in html
 
 

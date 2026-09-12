@@ -24,6 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection, Engine
 
+from radar.briefing import DailyIntelligenceBrief
 from radar.config import PROJECT_ROOT
 from radar.deterministic import build_macro_event
 from radar.domain import (
@@ -37,6 +38,7 @@ from radar.domain import (
     SourceKind,
     Story,
     StoryDocumentMembership,
+    content_hash,
     stable_id,
 )
 from radar.impact import MarketImpactRecord
@@ -49,6 +51,7 @@ DRIVER_CANDIDATE_MIGRATION = "002_c2_1_driver_candidates"
 STORY_CONSOLIDATION_MIGRATION = "003_c6_3_story_consolidation"
 C7_IMPORTANCE_RELEVANCE_MIGRATION = "004_c7_importance_relevance"
 C8_MARKET_REACTIONS_MIGRATION = "005_c8_market_reactions"
+C9_DAILY_BRIEFINGS_MIGRATION = "006_c9_daily_briefings"
 
 runs = Table(
     "runs",
@@ -229,6 +232,27 @@ Index(
     c8_market_impacts_table.c.target_symbol,
 )
 
+c9_daily_briefings_table = Table(
+    "c9_daily_briefings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("run_id", String(36), nullable=False, index=True),
+    Column("report_date", String(10), nullable=False, index=True),
+    Column("view_id", String(80), nullable=False),
+    Column("rule_version", String(40), nullable=False),
+    Column("composed_at", DateTime(timezone=True), nullable=False),
+    Column("primary_count", Integer, nullable=False),
+    Column("payload_hash", String(64), nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ux_c9_briefings_run_view_rule",
+    c9_daily_briefings_table.c.run_id,
+    c9_daily_briefings_table.c.view_id,
+    c9_daily_briefings_table.c.rule_version,
+    unique=True,
+)
+
 market_table = Table(
     "market_observations",
     metadata,
@@ -284,6 +308,86 @@ class RadarStore:
         self._migrate_c2_1_to_c6_3()
         self._migrate_c6_3_to_c7()
         self._migrate_c7_to_c8()
+        self._migrate_c8_to_c9()
+
+    def _migrate_c8_to_c9(self) -> None:
+        """Apply and validate additive C9 briefing persistence."""
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(80) PRIMARY KEY,
+                    applied_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+            self._validate_c9_schema(connection)
+            applied = connection.execute(
+                text("SELECT version FROM schema_migrations WHERE version = :version"),
+                {"version": C9_DAILY_BRIEFINGS_MIGRATION},
+            ).first()
+            if applied is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO schema_migrations (version, applied_at) "
+                        "VALUES (:version, :applied_at)"
+                    ),
+                    {
+                        "version": C9_DAILY_BRIEFINGS_MIGRATION,
+                        "applied_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+
+    def _validate_c9_schema(self, connection: Connection) -> None:
+        inspector = inspect(connection)
+        required_columns = {
+            "id",
+            "run_id",
+            "report_date",
+            "view_id",
+            "rule_version",
+            "composed_at",
+            "primary_count",
+            "payload_hash",
+            "payload_json",
+        }
+        columns = {column["name"]: column for column in inspector.get_columns("c9_daily_briefings")}
+        if not required_columns <= set(columns):
+            missing = ", ".join(sorted(required_columns - set(columns)))
+            raise RuntimeError(f"C9 migration is incomplete: c9_daily_briefings missing {missing}")
+        expected_types = {
+            "composed_at": DateTime,
+            "primary_count": Integer,
+            "payload_json": Text,
+        }
+        for name, expected_type in expected_types.items():
+            if not isinstance(columns[name]["type"], expected_type):
+                raise RuntimeError(f"C9 migration is incomplete: invalid briefing column {name}")
+        if any(column["nullable"] for column in columns.values()):
+            raise RuntimeError("C9 migration is incomplete: nullable briefing column")
+        if inspector.get_pk_constraint("c9_daily_briefings")["constrained_columns"] != ["id"]:
+            raise RuntimeError("C9 migration is incomplete: invalid briefing primary key")
+        indexes = inspector.get_indexes("c9_daily_briefings")
+        if not any(
+            index["column_names"] == ["run_id", "view_id", "rule_version"] and index["unique"]
+            for index in indexes
+        ):
+            raise RuntimeError("C9 migration is incomplete: identity index missing")
+        invalid_rows = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM c9_daily_briefings "
+                "WHERE id IS NULL OR TRIM(id) = '' "
+                "OR run_id IS NULL OR TRIM(run_id) = '' "
+                "OR report_date IS NULL OR TRIM(report_date) = '' "
+                "OR view_id IS NULL OR TRIM(view_id) = '' "
+                "OR rule_version IS NULL OR TRIM(rule_version) = '' "
+                "OR primary_count < 0 "
+                "OR payload_hash IS NULL OR LENGTH(payload_hash) <> 64 "
+                "OR payload_json IS NULL OR TRIM(payload_json) = ''"
+            )
+        ).scalar_one()
+        if invalid_rows:
+            raise RuntimeError("C9 migration is incomplete: invalid persisted rows")
 
     def _migrate_c7_to_c8(self) -> None:
         """Apply and validate additive C8 market-impact persistence."""
@@ -331,9 +435,7 @@ class RadarStore:
             "epistemic_status",
             "payload_json",
         }
-        columns = {
-            column["name"]: column for column in inspector.get_columns("c8_market_impacts")
-        }
+        columns = {column["name"]: column for column in inspector.get_columns("c8_market_impacts")}
         if not required_columns <= set(columns):
             missing = ", ".join(sorted(required_columns - set(columns)))
             raise RuntimeError(f"C8 migration is incomplete: c8_market_impacts missing {missing}")
@@ -995,9 +1097,7 @@ class RadarStore:
             ).scalars()
             return [C7Score.model_validate_json(payload) for payload in payloads]
 
-    def save_market_impacts(
-        self, run_id: str, items: Iterable[MarketImpactRecord]
-    ) -> None:
+    def save_market_impacts(self, run_id: str, items: Iterable[MarketImpactRecord]) -> None:
         """Persist versioned C8 evaluations; refresh only an exact evaluation identity."""
         for item in items:
             row_id = stable_id("c8-evaluation", f"{run_id}|{item.id}")
@@ -1045,9 +1145,7 @@ class RadarStore:
                     raise ValueError("C8 market impact identity is not deterministic")
                 connection.execute(c8_market_impacts_table.insert().values(**values))
 
-    def load_market_impacts(
-        self, run_id: str, rule_version: str
-    ) -> list[MarketImpactRecord]:
+    def load_market_impacts(self, run_id: str, rule_version: str) -> list[MarketImpactRecord]:
         with self.engine.connect() as connection:
             payloads = connection.execute(
                 select(c8_market_impacts_table.c.payload_json)
@@ -1062,6 +1160,75 @@ class RadarStore:
                 )
             ).scalars()
             return [MarketImpactRecord.model_validate_json(payload) for payload in payloads]
+
+    def save_daily_briefing(self, item: DailyIntelligenceBrief) -> None:
+        """Persist one immutable C9 product snapshot for a run/view/rule identity."""
+        payload = item.model_dump_json()
+        payload_hash = content_hash(payload)
+        values = {
+            "id": item.id,
+            "run_id": item.run_id,
+            "report_date": item.report_date,
+            "view_id": item.view_id,
+            "rule_version": item.rule_version,
+            "composed_at": item.composed_at,
+            "primary_count": len(item.primary_stories),
+            "payload_hash": payload_hash,
+            "payload_json": payload,
+        }
+        with self.engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(
+                        c9_daily_briefings_table.c.id,
+                        c9_daily_briefings_table.c.payload_hash,
+                        c9_daily_briefings_table.c.payload_json,
+                    ).where(
+                        c9_daily_briefings_table.c.run_id == item.run_id,
+                        c9_daily_briefings_table.c.view_id == item.view_id,
+                        c9_daily_briefings_table.c.rule_version == item.rule_version,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                if (
+                    existing["id"] != item.id
+                    or existing["payload_hash"] != payload_hash
+                    or existing["payload_json"] != payload
+                ):
+                    raise ValueError("immutable C9 briefing conflicts with persisted run/view/rule")
+                return
+            connection.execute(c9_daily_briefings_table.insert().values(**values))
+
+    def load_daily_briefing(
+        self, run_id: str, view_id: str, rule_version: str
+    ) -> DailyIntelligenceBrief | None:
+        with self.engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(
+                        c9_daily_briefings_table.c.payload_hash,
+                        c9_daily_briefings_table.c.payload_json,
+                    ).where(
+                        c9_daily_briefings_table.c.run_id == run_id,
+                        c9_daily_briefings_table.c.view_id == view_id,
+                        c9_daily_briefings_table.c.rule_version == rule_version,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        payload = str(row["payload_json"])
+        if content_hash(payload) != row["payload_hash"]:
+            raise RuntimeError("persisted C9 briefing payload checksum is invalid")
+        item = DailyIntelligenceBrief.model_validate_json(payload)
+        if item.run_id != run_id or item.view_id != view_id or item.rule_version != rule_version:
+            raise RuntimeError("persisted C9 briefing identity is inconsistent")
+        return item
 
     def load_stories(self, rule_version: str) -> list[Story]:
         with self.engine.connect() as connection:

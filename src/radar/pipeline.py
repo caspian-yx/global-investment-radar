@@ -7,10 +7,10 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from radar.briefing import compose_daily_brief, select_daily_stories
 from radar.config import Settings, load_universe
 from radar.deterministic import (
     assess_report_quality,
-    build_deterministic_summary,
     extract_market_events,
     extract_story_events,
 )
@@ -213,9 +213,7 @@ def _run_started_pipeline(
             batch.diagnostics,
         )
 
-    document_dedupe = deduplicate_source_documents(
-        _flatten(batch.documents for batch in batches)
-    )
+    document_dedupe = deduplicate_source_documents(_flatten(batch.documents for batch in batches))
     documents = document_dedupe.documents
     logger.info("Document ingestion deduplication diagnostics=%s", document_dedupe.diagnostics)
     markets = _flatten(batch.markets for batch in batches)
@@ -223,9 +221,7 @@ def _run_started_pipeline(
     macro_source_document_ids = {
         item.source_document_id for item in macro if item.source_document_id is not None
     }
-    official_documents = [
-        item for item in documents if item.id not in macro_source_document_ids
-    ]
+    official_documents = [item for item in documents if item.id not in macro_source_document_ids]
     existing_stories = store.load_stories(STORY_RULE_VERSION)
     existing_memberships = store.load_story_memberships(STORY_RULE_VERSION)
     persisted_story_documents = store.load_source_documents(
@@ -256,8 +252,8 @@ def _run_started_pipeline(
     market_events, market_claims, market_evidence = extract_market_events(
         markets, universe["assets"], started_at
     )
-    macro_events, macro_claims, macro_evidence = (
-        store.save_macro_with_first_observed_events(run_id, macro, started_at)
+    macro_events, macro_claims, macro_evidence = store.save_macro_with_first_observed_events(
+        run_id, macro, started_at
     )
     canonical_macro = store.load_canonical_macro_observations(macro)
     macro_source_documents = [
@@ -283,9 +279,7 @@ def _run_started_pipeline(
     c7_scores = [
         ranked_score
         for view in views
-        for ranked_score in rank_scores(
-            [item for item in raw_c7_scores if item.view_id == view.id]
-        )
+        for ranked_score in rank_scores([item for item in raw_c7_scores if item.view_id == view.id])
     ]
     selected_view = next(
         (view for view in views if view.id == settings.radar_view_id),
@@ -310,10 +304,10 @@ def _run_started_pipeline(
     c1_claims = [*official_claims, *market_claims, *macro_claims]
     c1_evidence = [*official_evidence, *market_evidence, *macro_evidence]
     observation_evidence = build_observation_evidence(markets, [])
-    cross_asset_claims, cross_asset_evidence, cross_asset_by_target = (
-        build_cross_asset_context(markets, market_events, universe["assets"], started_at)
+    cross_asset_claims, cross_asset_evidence, _cross_asset_by_target = build_cross_asset_context(
+        markets, market_events, universe["assets"], started_at
     )
-    macro_backdrop_claims, macro_backdrop_evidence, macro_backdrop_by_target = (
+    macro_backdrop_claims, macro_backdrop_evidence, _macro_backdrop_by_target = (
         build_macro_backdrop(canonical_macro, market_events, started_at)
     )
     evidence = unique_by_id(
@@ -375,7 +369,7 @@ def _run_started_pipeline(
         target_driver_candidates, target_driver_claims = build_driver_candidates(
             target_events=[target],
             candidate_events=[
-                    candidate_events_by_id[event_id]
+                candidate_events_by_id[event_id]
                 for event_id in sorted(allowed_event_ids_by_target[target.id])
             ],
             evidence=evidence,
@@ -387,9 +381,7 @@ def _run_started_pipeline(
         driver_claims.extend(target_driver_claims)
     driver_candidates = unique_by_id(driver_candidates)
     driver_claims = unique_by_id(driver_claims)
-    claims = unique_by_id(
-        [*c1_claims, *cross_asset_claims, *macro_backdrop_claims, *driver_claims]
-    )
+    claims = unique_by_id([*c1_claims, *cross_asset_claims, *macro_backdrop_claims, *driver_claims])
     for candidate in driver_candidates:
         validate_driver_candidate_bundle(
             candidate,
@@ -407,13 +399,9 @@ def _run_started_pipeline(
         evidence=evidence,
     )
     driver_candidates = [
-        candidate
-        for bundle in explanation_bundles
-        for candidate in bundle.driver_candidates
+        candidate for bundle in explanation_bundles for candidate in bundle.driver_candidates
     ]
-    generation_bundles = [
-        bundle for bundle in explanation_bundles if bundle.driver_candidates
-    ]
+    generation_bundles = [bundle for bundle in explanation_bundles if bundle.driver_candidates]
     generation_provider = None
     if settings.effective_ai_enabled and generation_bundles:
         try:
@@ -445,7 +433,6 @@ def _run_started_pipeline(
         ai_enrichment.usage.total_tokens,
         str(ai_enrichment.usage.budget_exhausted).lower(),
     )
-    summary = build_deterministic_summary(markets, macro, events)
     logger.info(
         "Collection complete documents=%d markets=%d macro=%d stories=%d "
         "official_events=%d market_events=%d macro_events=%d total_events=%d "
@@ -473,8 +460,7 @@ def _run_started_pipeline(
                 evidence_map[item_id].model_copy(deep=True) for item_id in event.evidence_ids
             ],
             sources=[
-                source_map[item_id].model_copy(deep=True)
-                for item_id in event.source_document_ids
+                source_map[item_id].model_copy(deep=True) for item_id in event.source_document_ids
             ],
         )
         try:
@@ -482,9 +468,7 @@ def _run_started_pipeline(
         except Exception as exc:
             logger.exception("Optional AI analysis failed; deterministic report will continue")
             analyses.append(
-                build_llm_provider(settings.model_copy(update={"ai_enabled": False})).analyze(
-                    pack
-                )
+                build_llm_provider(settings.model_copy(update={"ai_enabled": False})).analyze(pack)
             )
             provider_statuses.append(
                 ProviderRunStatus(
@@ -535,80 +519,53 @@ def _run_started_pipeline(
         quality.reasons,
     )
 
+    c9_selection = select_daily_stories(
+        events=events,
+        stories=story_consolidation.stories,
+        documents=documents,
+        scores=selected_c7_scores,
+        view_id=selected_view.id,
+    )
+    briefing = store.load_daily_briefing(run_id, selected_view.id, c9_selection.rule_version)
+    if briefing is None:
+        briefing = compose_daily_brief(
+            selection=c9_selection,
+            run_id=run_id,
+            report_date=report_date,
+            view_name=selected_view.name,
+            composed_at=started_at,
+            ai_status=ai_status,
+            quality=quality,
+            document_count=len(documents),
+            event_count=len(events),
+            provider_statuses=provider_statuses,
+            markets=markets,
+            assets=universe["assets"],
+            market_impacts=c8_evaluation.records,
+            explanation_bundles=explanation_bundles,
+            structured_explanations=structured_explanations,
+        )
+        store.save_daily_briefing(briefing)
+    else:
+        logger.info(
+            "C9 immutable snapshot reused run_id=%s view=%s rule=%s",
+            run_id,
+            selected_view.id,
+            c9_selection.rule_version,
+        )
+    logger.info("C9 daily briefing diagnostics=%s", briefing.diagnostics.model_dump())
+
     is_demo = any(batch.is_demo for batch in batches)
     ai_test_data = any(item.is_test_data for item in analyses)
-    missing_data = [
-        f"{status.provider}: {warning}"
-        for status in provider_statuses
-        for warning in status.warnings
-        if status.status is not ProviderStatus.OK
-    ]
-    if not documents:
-        missing_data.append("No source documents were collected.")
-    if not markets:
-        missing_data.append("No market observations were collected.")
-    if not macro:
-        missing_data.append("No macro observations were collected.")
     context = report_context(
-        report_date=report_date,
-        run_id=run_id,
+        briefing=briefing,
         data_mode=settings.data_mode,
         is_demo=is_demo,
-        ai_status=ai_status,
         ai_test_data=ai_test_data,
-        quality=quality,
-        provider_statuses=provider_statuses,
-        markets=markets,
-        macro=macro,
-        events=ranked_events[:10],
-        c7_scores={item.event_id: item for item in selected_c7_scores},
-        market_impacts={
-            event.id: [
-                item for item in c8_evaluation.records if item.event_id == event.id
-            ]
-            for event in ranked_events[:10]
-        },
-        active_view=selected_view.name,
-        claims=claim_map,
-        evidence=evidence_map,
-        sources=source_map,
-        analyses={item.event_id: item for item in analyses},
-        explanation_bundles={
-            bundle.target_event.id: bundle for bundle in explanation_bundles
-        },
-        structured_explanations=structured_explanations,
-        cross_asset_context={
-            event.id: [claim_map[item_id] for item_id in cross_asset_by_target[event.id]]
-            for event in market_events
-        },
-        macro_backdrop={
-            event.id: [claim_map[item_id] for item_id in macro_backdrop_by_target[event.id]]
-            for event in market_events
-        },
-        summary=summary,
-        coverage={
-            "documents": len(documents),
-            "events": len(events),
-            "official_events": len(official_events),
-            "market_events": len(market_events),
-            "macro_events": len(macro_events),
-            "driver_candidates": len(driver_candidates),
-            "market_impacts": len(c8_evaluation.records),
-            "markets": len(markets),
-            "macro": len(macro),
-        },
-        freshness={
-            "latest_market_at": max((item.observed_at for item in markets), default=None),
-            "latest_source_at": max((item.published_at for item in documents), default=None),
-            "latest_macro_period": max((item.period for item in macro), default=None),
-        },
-        missing_data=missing_data,
     )
     renderer = HtmlReportRenderer()
     html = renderer.render(context)
-    report_path, html_hash = renderer.write(
-        html, settings.resolved_report_output_dir, report_date
-    )
+    report_path, html_hash = renderer.write(html, settings.resolved_report_output_dir, report_date)
     report_id = stable_id("report", run_key)
     store.save_report(
         report_id=report_id,
@@ -647,7 +604,7 @@ def _run_started_pipeline(
         run_id=run_id,
         report_date=report_date,
         is_demo=is_demo,
-        ai_status=context["ai_status"],
+        ai_status=briefing.ai_status,
         quality_status=quality.status,
         documents=len(documents),
         events=len(events),
@@ -681,6 +638,7 @@ def _run_started_pipeline(
             "diagnostics": c7_diagnostics,
         },
         "c8": c8_evaluation.diagnostics.model_dump(mode="json"),
+        "c9": briefing.diagnostics.model_dump(mode="json"),
     }
     logger.info(
         "Pipeline completed run_id=%s report_path=%s email_status=%s elapsed_seconds=%.3f",

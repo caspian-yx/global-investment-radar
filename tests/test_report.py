@@ -1,305 +1,164 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from test_briefing_composition import _compose
 
-from radar.domain import (
-    AssetClass,
-    CandidateExplanation,
-    DeterministicSummary,
-    Event,
-    EventType,
-    GenerationMetadata,
-    ReportQualityAssessment,
-    ReportQualityStatus,
-    SessionKind,
-    StructuredExplanation,
-)
-from radar.impact import (
-    C8_RULE_VERSION,
-    AssociationConfidence,
-    BarDateBasis,
-    EpistemicStatus,
-    ImpactMagnitude,
-    ImpactReason,
-    ImpactTargetKind,
-    MarketImpactRecord,
-    MarketTargetSnapshot,
-    ReactionDirection,
-    ReactionMeasurement,
-    ReactionProfile,
-    ReactionWindow,
-    TransmissionBasisSnapshot,
-    market_impact_id,
-)
-from radar.relevance import (
-    RELATIONSHIP_RULE_VERSION,
-    RelationshipReason,
-    TransmissionChannel,
-)
 from radar.report import HtmlReportRenderer, report_context
 
-AS_OF = datetime(2026, 9, 10, 8, tzinfo=UTC)
 
-
-def _target() -> Event:
-    return Event(
-        id="target-event",
-        event_key="market:^GSPC:2026-09-10",
-        event_type=EventType.MARKET_MOVE,
-        title="S&P 500 declined",
-        occurred_at=AS_OF,
-        first_seen_at=AS_OF,
-        last_seen_at=AS_OF,
-        entity_ids=["^GSPC"],
-        claim_ids=[],
-        evidence_ids=[],
-        source_document_ids=[],
-        importance_score=80,
-        importance_components={"magnitude": 80},
-        confidence=0.9,
-    )
-
-
-def _context(
-    structured_explanations: dict[str, StructuredExplanation] | None = None,
-) -> dict[str, object]:
-    target = _target()
-    return report_context(
-        report_date="2026-09-10",
-        run_id="run-test",
-        data_mode="test",
+def _render(*, briefing_override=None, **context_overrides) -> str:
+    brief = briefing_override or _compose()[0]
+    context = report_context(
+        briefing=brief,
         is_demo=False,
-        ai_status="disabled",
         ai_test_data=False,
-        quality=ReportQualityAssessment(
-            status=ReportQualityStatus.HEALTHY,
-            market_coverage=1.0,
-        ),
-        provider_statuses=[],
-        markets=[],
-        macro=[],
-        events=[target],
-        claims={},
-        evidence={},
-        sources={},
-        analyses={},
-        explanation_bundles={},
-        cross_asset_context={},
-        macro_backdrop={},
-        summary=DeterministicSummary(
-            market_headline="No market observations.",
-            market_leaders=[],
-            macro_headlines=[],
-            risk_flags=[],
-        ),
-        coverage={
-            "markets": 0,
-            "macro": 0,
-            "documents": 0,
-            "events": 1,
-        },
-        freshness={
-            "latest_market_at": None,
-            "latest_source_at": None,
-            "latest_macro_period": None,
-        },
-        missing_data=[],
-        structured_explanations=structured_explanations,
+        data_mode="live",
+        **context_overrides,
     )
+    return HtmlReportRenderer().render(context)
 
 
-def _explanation(*, uncertainty: str | None = None) -> StructuredExplanation:
-    return StructuredExplanation(
-        target_event_id="target-event",
-        headline="A generated headline & <script>alert(1)</script>",
-        summary="A concise generated summary.",
-        candidate_explanations=(
-            CandidateExplanation(
-                candidate_id="candidate-first",
-                explanation="First explanation & <b>escaped</b>.",
+def test_c9_report_renders_complete_editorial_product() -> None:
+    html = _render()
+
+    for heading in (
+        "Overnight in 30 Seconds",
+        "Things That Matter",
+        "Market Reaction",
+        "Under the Radar",
+        "Watch Today",
+        "Market Snapshot",
+        "Sources &amp; Data Quality",
+    ):
+        assert heading in html
+    assert "Global Investment Radar" in html
+    assert "AI is off" in html
+    assert "policy material development" in html
+    assert "It may reset policy expectations" in html
+
+
+def test_report_is_mobile_safe_email_html_without_dashboard_dependencies() -> None:
+    html = _render()
+    lowered = html.casefold()
+
+    assert 'name="viewport"' in lowered
+    assert "max-width:680px" in lowered
+    assert "width:100%" in lowered
+    assert "<script" not in lowered
+    assert "<link" not in lowered
+    assert "position:fixed" not in lowered
+    assert "display:grid" not in lowered
+    assert "display:flex" not in lowered
+    assert "linear-gradient" not in lowered
+    assert "source_reason_codes" not in lowered
+    assert "priority_reason" not in lowered
+    assert "input_tokens" not in lowered
+    assert "provider-status" not in lowered
+    assert lowered.count("<table") == lowered.count("</table>")
+    assert lowered.count("<tr") == lowered.count("</tr>")
+    assert lowered.count("<td") == lowered.count("</td>")
+
+
+def test_report_escapes_content_and_does_not_render_internal_ids() -> None:
+    brief, _ = _compose()
+    first = brief.primary_stories[0]
+    hostile = first.model_copy(
+        update={"headline": "Policy <script>alert('secret')</script> & update"}
+    )
+    brief = brief.model_copy(
+        update={
+            "primary_stories": (hostile, *brief.primary_stories[1:]),
+            "overnight": (
+                brief.overnight[0].model_copy(
+                    update={"text": "Policy <script>alert('secret')</script> & update"}
+                ),
+                *brief.overnight[1:],
             ),
-            CandidateExplanation(
-                candidate_id="candidate-second",
-                explanation="Second explanation.",
-            ),
-        ),
-        uncertainty=uncertainty,
-        generation=GenerationMetadata(
-            provider="deepseek",
-            requested_model="deepseek-v4-flash",
-            returned_model="deepseek-flash",
-            input_tokens=12,
-            output_tokens=34,
-            total_tokens=46,
-            latency_seconds=1.25,
-        ),
+        }
     )
-
-
-def _impact(
-    *,
-    move: float = -1.2,
-    confidence: AssociationConfidence = AssociationConfidence.MEDIUM,
-    ambiguous: bool = False,
-) -> MarketImpactRecord:
-    magnitude = ImpactMagnitude.FLAT if abs(move) < 0.1 else ImpactMagnitude.MODERATE
-    direction = (
-        ReactionDirection.FLAT
-        if magnitude is ImpactMagnitude.FLAT
-        else ReactionDirection.UP
-        if move > 0
-        else ReactionDirection.DOWN
-    )
-    reasons = {
-        ImpactReason.C6_AUTHORIZED,
-        ImpactReason.DIRECT_ENTITY_TARGET,
-        ImpactReason.POST_EVENT_REACTION,
-        ImpactReason.SAME_SESSION,
-        ImpactReason.STRONG_TEMPORAL_ALIGNMENT,
-        ImpactReason.NO_MEANINGFUL_REACTION
-        if magnitude is ImpactMagnitude.FLAT
-        else ImpactReason.MATERIAL_MOVE,
-    }
-    if ambiguous:
-        reasons.add(ImpactReason.MULTIPLE_PLAUSIBLE_EVENTS)
-    return MarketImpactRecord(
-        id=market_impact_id(
-            story_id=None,
-            event_id="target-event",
-            symbol="TEST",
-            reaction_window=ReactionWindow.SAME_SESSION,
-            rule_version=C8_RULE_VERSION,
-        ),
-        story_id=None,
-        event_id="target-event",
-        event_at=AS_OF,
-        target=MarketTargetSnapshot(
-            symbol="TEST",
-            name="Test <script>secret()</script> Market",
-            asset_class=AssetClass.EQUITY_INDEX,
-            region="US",
-            session_kind=SessionKind.EXCHANGE,
-            timezone="America/New_York",
-            close_time=datetime.strptime("16:00", "%H:%M").time(),
-            bar_date_basis=BarDateBasis.UTC_PROVIDER_TIMESTAMP_DATE,
-            reaction_profile=ReactionProfile.EQUITY_INDEX,
-        ),
-        reaction_window=ReactionWindow.SAME_SESSION,
-        measurement=ReactionMeasurement(
-            market_observation_id="market-observation",
-            provider="test",
-            raw_reference_at=AS_OF - timedelta(hours=2),
-            raw_observed_at=AS_OF,
-            reference_at=AS_OF - timedelta(hours=1),
-            observed_at=AS_OF + timedelta(hours=1),
-            currency="USD",
-            reference_value=100.0,
-            observed_value=100.0 + move,
-            absolute_move=move,
-            percentage_move=move,
-        ),
-        direction=direction,
-        magnitude=magnitude,
-        epistemic_status=EpistemicStatus.ASSOCIATED,
-        association_confidence=confidence,
-        transmission_basis=TransmissionBasisSnapshot(
-            target_kind=ImpactTargetKind.DIRECT_TARGET_REACTION,
-            source_channel=TransmissionChannel.DIRECT_ENTITY,
-            source_reason_codes=(RelationshipReason.DIRECT_ENTITY_MATCH,),
-            source_rule_version=RELATIONSHIP_RULE_VERSION,
-        ),
-        reason_codes=tuple(sorted(reasons, key=lambda item: item.value)),
-        event_evidence_ids=(),
-        rule_version=C8_RULE_VERSION,
-        evaluated_at=AS_OF + timedelta(hours=2),
-    )
-
-
-def test_report_without_structured_explanation_keeps_deterministic_path() -> None:
-    html = HtmlReportRenderer().render(_context())
-
-    assert "<html" in html
-    assert "Evidence-first · Optional AI enrichment" in html
-    assert "No-AI capable pipeline" not in html
-    assert "Possible drivers" in html
-    assert "AI explanation" not in html
-
-
-def test_report_renders_structured_explanation_in_candidate_order() -> None:
     html = HtmlReportRenderer().render(
-        _context({"target-event": _explanation()})
-    )
-
-    assert "A generated headline" in html
-    assert "A concise generated summary." in html
-    assert html.index("First explanation") < html.index("Second explanation")
-    assert "candidate-first" not in html
-    assert "candidate-second" not in html
-    assert "Uncertainty" not in html
-
-
-def test_report_renders_uncertainty_metadata_and_escapes_generated_text() -> None:
-    html = HtmlReportRenderer().render(
-        _context(
-            {
-                "target-event": _explanation(
-                    uncertainty="Support is limited; causality remains uncertain."
-                )
-            }
+        report_context(
+            briefing=brief,
+            is_demo=False,
+            ai_test_data=False,
+            data_mode="live",
         )
     )
 
-    assert "Support is limited; causality remains uncertain." in html
-    assert "deepseek" in html
-    assert "deepseek-v4-flash" in html
-    assert "deepseek-flash" in html
-    assert "12 input tokens" in html
-    assert "34 output tokens" in html
-    assert "46 total tokens" in html
-    assert "1.25s" in html
-    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
-    assert "<script>alert(1)</script>" not in html
-    assert "&lt;b&gt;escaped&lt;/b&gt;" in html
+    assert "&lt;script&gt;alert" in html
+    assert "<script>alert" not in html
+    assert first.event_id not in html
+    assert first.story_id not in html
+    assert "claim-" not in html
+    assert "evidence-" not in html
 
 
-def test_report_does_not_render_prompt_or_reasoning_content() -> None:
+def test_report_keeps_c8_observational_and_bounded() -> None:
+    from test_briefing_composition import _items
+    from test_c8_storage import _record
+
+    event_id = _items()[0][2].id
+    brief, _ = _compose(
+        market_impacts=(
+            _record(event_id=event_id, symbol="^GSPC"),
+            _record(event_id=event_id, symbol="^NDX"),
+            _record(event_id=event_id, symbol="^DJI"),
+        )
+    )
+    html = _render(briefing_override=brief)
+
+    assert "associated, not causal" in html
+    assert html.count("completed daily bar") <= 4
+    assert "caused by" not in html.casefold()
+    assert "triggered by" not in html.casefold()
+    assert "investors sold because" not in html.casefold()
+    assert "payload_json" not in html
+    assert "reason_codes" not in html
+    assert "api_key" not in html.casefold()
+    assert "BUY" not in html
+    assert "SELL" not in html
+
+
+def test_low_activity_and_demo_states_are_explicit_and_complete() -> None:
+    from test_briefing_composition import _quality
+    from test_briefing_selection import NOW, _candidate, _select
+
+    from radar.briefing import compose_daily_brief
+    from radar.domain import EventType
+    from radar.importance import ImportanceBand, PriorityBand, RelevanceBand
+
+    weak = _candidate(
+        "weak-report",
+        event_type=EventType.OTHER,
+        region="US",
+        entity="other",
+        importance=1,
+        importance_band=ImportanceBand.LOW,
+        relevance=0,
+        relevance_band=RelevanceBand.NONE,
+        priority=PriorityBand.IGNORE,
+    )
+    brief = compose_daily_brief(
+        selection=_select([weak]),
+        run_id="run-low-report",
+        report_date="2026-09-13",
+        view_name="Global",
+        composed_at=NOW,
+        ai_status="disabled",
+        quality=_quality(),
+        document_count=1,
+        event_count=1,
+    )
     html = HtmlReportRenderer().render(
-        _context({"target-event": _explanation()})
+        report_context(
+            briefing=brief,
+            is_demo=True,
+            ai_test_data=False,
+            data_mode="demo",
+        )
     )
 
-    assert "INPUT_JSON" not in html
-    assert "reasoning_content" not in html
-
-
-def test_report_renders_observed_reaction_without_causal_upgrade_or_internal_json() -> None:
-    context = _context()
-    context["market_impacts"] = {"target-event": [_impact()]}
-
-    html = HtmlReportRenderer().render(context)
-
-    assert "Market reaction" in html
-    assert "-1.20%" in html
-    assert "Magnitude MODERATE" in html
-    assert "Association MEDIUM" in html
-    assert "does not establish causality" in html
-    assert "caused by" not in html.casefold()
-    assert "source_reason_codes" not in html
-    assert "&lt;script&gt;secret()&lt;/script&gt;" in html
-    assert "<script>secret()</script>" not in html
-
-
-def test_report_distinguishes_no_reaction_low_confidence_and_competing_events() -> None:
-    context = _context()
-    context["market_impacts"] = {
-        "target-event": [
-            _impact(move=0.01),
-            _impact(confidence=AssociationConfidence.LOW, ambiguous=True),
-        ]
-    }
-
-    html = HtmlReportRenderer().render(context)
-
-    assert "limited / no meaningful immediate reaction" in html
-    assert "evidence is insufficient to attribute it to this Story" in html
-    assert "Multiple plausible Events share this target and window" in html
-    assert "no single cause is assigned" in html
+    assert "Low-activity brief" in html
+    assert "No strong Story met today’s primary threshold" in html
+    assert "No validated linked reaction is available" in html
+    assert "No watch item was inferred" in html
+    assert "DEMO DATA" in html

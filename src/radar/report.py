@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from radar.briefing import DailyIntelligenceBrief
 from radar.config import PROJECT_ROOT
-from radar.domain import StructuredExplanation, content_hash
+from radar.domain import content_hash
 
 
 class HtmlReportRenderer:
@@ -36,14 +35,14 @@ class HtmlReportRenderer:
 
 def report_context(
     *,
-    structured_explanations: Mapping[str, StructuredExplanation | None] | None = None,
-    **kwargs: Any,
+    briefing: DailyIntelligenceBrief,
+    is_demo: bool,
+    ai_test_data: bool,
+    data_mode: str,
 ) -> dict[str, Any]:
     return {
-        "generated_at": datetime.now(UTC),
-        "structured_explanations": dict(structured_explanations or {}),
-        "c7_scores": {},
-        "market_impacts": {},
-        "active_view": "Global",
-        **kwargs,
+        "briefing": briefing,
+        "is_demo": is_demo,
+        "ai_test_data": ai_test_data,
+        "data_mode": data_mode,
     }

@@ -3,274 +3,135 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Global Investment Radar — {{ report_date }}</title>
+  <title>Global Investment Radar — {{ briefing.report_date }}</title>
 </head>
-<body style="margin:0;background:#f4f6f8;color:#17202a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
-  <div style="display:none;max-height:0;overflow:hidden;color:transparent;">
-    Evidence-first market, macro and event briefing for {{ report_date }}.
-  </div>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;border-collapse:collapse;">
-    <tr><td align="center" style="padding:24px 10px;">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:720px;background:#ffffff;border-collapse:collapse;border:1px solid #dfe4e8;">
-        <tr>
-          <td style="padding:26px 26px 18px;background:#132238;color:#ffffff;">
-            <div style="font-size:12px;letter-spacing:1.4px;text-transform:uppercase;color:#a9bad0;">Evidence-first daily research</div>
-            <h1 style="margin:8px 0 4px;font-size:26px;line-height:1.2;">Global Investment Radar</h1>
-            <div style="font-size:15px;color:#d8e1eb;">{{ report_date }} · Evidence-first · Optional AI enrichment</div>
-          </td>
-        </tr>
+<body style="margin:0;background:#F7F8FA;color:#14243A;font-family:Aptos,'Segoe UI',Arial,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;color:transparent;">A focused global intelligence brief for {{ briefing.report_date }}.</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:#F7F8FA;border-collapse:collapse;">
+    <tr>
+      <td align="center" style="padding:20px 10px 32px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:680px;background:#FFFFFF;border-collapse:collapse;">
+          <tr>
+            <td style="padding:28px 26px 22px;border-top:5px solid #285A8E;">
+              <div style="font-size:11px;line-height:1.3;letter-spacing:1.5px;text-transform:uppercase;color:#285A8E;font-weight:700;">Daily Intelligence · {{ briefing.view_name }}</div>
+              <h1 style="margin:9px 0 5px;font-size:27px;line-height:1.14;font-weight:700;color:#14243A;">Global Investment Radar</h1>
+              <div style="font-size:14px;line-height:1.5;color:#5E6C7B;">{{ briefing.report_date }} · Signal before volume</div>
+            </td>
+          </tr>
 
-        {% if is_demo %}
-        <tr><td style="padding:14px 26px;background:#fff3cd;color:#6f5200;font-size:14px;line-height:1.5;border-bottom:1px solid #efd98b;">
-          <strong>DEMO DATA:</strong> This report contains synthetic fixtures. It validates the pipeline and must not be used as investment research.
-        </td></tr>
-        {% endif %}
-        {% if ai_test_data %}
-        <tr><td style="padding:14px 26px;background:#fde8e8;color:#7b2020;font-size:14px;line-height:1.5;border-bottom:1px solid #efb5b5;">
-          <strong>TEST AI OUTPUT:</strong> FakeLLMProvider is active. Every AI paragraph below is synthetic test data.
-        </td></tr>
-        {% elif ai_status == 'disabled' and not structured_explanations %}
-        <tr><td style="padding:12px 26px;background:#edf3f8;color:#40566f;font-size:13px;line-height:1.5;border-bottom:1px solid #d9e3ec;">
-          AI analysis is disabled or unavailable. All summaries and rankings in this report were generated deterministically.
-        </td></tr>
-        {% endif %}
-
-        {% if quality.status.value == 'INSUFFICIENT' %}
-        <tr><td style="padding:16px 26px;background:#fde8e8;color:#7b2020;font-size:14px;line-height:1.5;border-bottom:1px solid #efb5b5;">
-          <strong>INSUFFICIENT DATA:</strong> This is a diagnostic report, not a normal morning brief.
-          {% for reason in quality.reasons %}<div style="margin-top:4px;">{{ reason }}</div>{% endfor %}
-        </td></tr>
-        {% elif quality.status.value == 'DEGRADED' %}
-        <tr><td style="padding:14px 26px;background:#fff3cd;color:#6f5200;font-size:13px;line-height:1.5;border-bottom:1px solid #efd98b;">
-          <strong>DEGRADED DATA:</strong>
-          {% for reason in quality.reasons %}{{ reason }}{% if not loop.last %} {% endif %}{% endfor %}
-        </td></tr>
-        {% endif %}
-
-        <tr><td style="padding:22px 26px 8px;">
-          <h2 style="margin:0 0 10px;font-size:19px;color:#132238;">Run health</h2>
-          {% for status in provider_statuses %}
-          <div style="padding:8px 0;border-top:1px solid #edf0f2;font-size:13px;line-height:1.45;">
-            <strong>{{ status.provider }}</strong> · {{ status.status }} · {{ status.item_count }} items
-            {% for warning in status.warnings %}<div style="color:#697887;margin-top:3px;">{{ warning }}</div>{% endfor %}
-          </div>
-          {% endfor %}
-        </td></tr>
-
-        <tr><td style="padding:20px 26px 8px;">
-          <h2 style="margin:0 0 10px;font-size:19px;color:#132238;">Data Coverage</h2>
-          <div style="font-size:13px;line-height:1.7;color:#4c5b68;">
-            Market observations {{ coverage.markets }} · Macro observations {{ coverage.macro }} ·
-            Source documents {{ coverage.documents }} · Events {{ coverage.events }}
-          </div>
-          <h3 style="margin:14px 0 5px;font-size:14px;color:#25384d;">Freshness</h3>
-          <div style="font-size:13px;line-height:1.7;color:#667583;">
-            Latest market: {{ freshness.latest_market_at.isoformat() if freshness.latest_market_at else 'unavailable' }}<br>
-            Latest source: {{ freshness.latest_source_at.isoformat() if freshness.latest_source_at else 'unavailable' }}<br>
-            Latest macro period: {{ freshness.latest_macro_period or 'unavailable' }}
-          </div>
-          <h3 style="margin:14px 0 5px;font-size:14px;color:#25384d;">Missing Data</h3>
-          {% for note in missing_data %}
-          <div style="padding:4px 0;font-size:13px;line-height:1.5;color:#7a5b28;">{{ note }}</div>
-          {% endfor %}
-          {% if not missing_data %}
-          <div style="font-size:13px;color:#527261;">No missing category or provider failure was detected.</div>
+          {% if is_demo %}
+          <tr><td style="padding:11px 26px;background:#FFF6DF;color:#785A18;font-size:12px;line-height:1.55;border-top:1px solid #EAD9A7;"><strong>DEMO DATA</strong> · Synthetic fixtures for pipeline validation; not investment research.</td></tr>
           {% endif %}
-        </td></tr>
+          {% if ai_test_data %}
+          <tr><td style="padding:11px 26px;background:#FCEEEE;color:#7A2E2E;font-size:12px;line-height:1.55;border-top:1px solid #ECCACA;"><strong>TEST AI OUTPUT</strong> · Any AI-assisted prose is synthetic.</td></tr>
+          {% elif briefing.ai_status == 'disabled' %}
+          <tr><td style="padding:11px 26px;background:#EEF3F8;color:#40566F;font-size:12px;line-height:1.55;border-top:1px solid #D9E0E7;"><strong>AI is off.</strong> Selection, ordering and explanations remain complete and deterministic.</td></tr>
+          {% elif briefing.ai_status in ['failed', 'partial'] %}
+          <tr><td style="padding:11px 26px;background:#FFF6DF;color:#785A18;font-size:12px;line-height:1.55;border-top:1px solid #EAD9A7;"><strong>AI enrichment {{ briefing.ai_status }}.</strong> The deterministic brief remains complete.</td></tr>
+          {% endif %}
 
-        <tr><td style="padding:20px 26px 8px;">
-          <h2 style="margin:0 0 6px;font-size:19px;color:#132238;">Overnight Market</h2>
-          <p style="margin:0 0 12px;color:#4c5b68;font-size:14px;line-height:1.55;">{{ summary.market_headline }}</p>
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:14px;">
-            {% for item in summary.market_leaders %}
-            <tr>
-              <td style="padding:9px 6px;border-top:1px solid #edf0f2;">{{ item.name }}</td>
-              <td align="right" style="padding:9px 6px;border-top:1px solid #edf0f2;color:#596875;">{{ '%.2f'|format(item.close) }}</td>
-              <td align="right" style="padding:9px 6px;border-top:1px solid #edf0f2;font-weight:700;color:{% if item.change_pct >= 0 %}#147a52{% else %}#b13a3a{% endif %};">{{ '%+.2f'|format(item.change_pct) }}%</td>
-            </tr>
+          {% if briefing.data_quality.status == 'INSUFFICIENT' %}
+          <tr><td style="padding:12px 26px;background:#FCEEEE;color:#7A2E2E;font-size:12px;line-height:1.55;border-top:1px solid #ECCACA;"><strong>INSUFFICIENT DATA</strong> · This is a diagnostic brief; the normal delivery quality gate will reject it.</td></tr>
+          {% elif briefing.data_quality.status == 'DEGRADED' %}
+          <tr><td style="padding:12px 26px;background:#FFF6DF;color:#785A18;font-size:12px;line-height:1.55;border-top:1px solid #EAD9A7;"><strong>DEGRADED DATA</strong> · Read conclusions with additional caution.</td></tr>
+          {% endif %}
+
+          <tr>
+            <td style="padding:16px 26px 8px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#14243A;">
+                <tr><td style="padding:22px 22px 20px;color:#FFFFFF;">
+                  <div style="font-size:11px;line-height:1.3;letter-spacing:1.4px;text-transform:uppercase;color:#AFC4D9;font-weight:700;">Overnight in 30 Seconds</div>
+                  {% if briefing.overnight %}
+                    {% for item in briefing.overnight %}
+                    <div style="padding-top:{% if loop.first %}13{% else %}10{% endif %}px;font-size:14px;line-height:1.55;color:#F3F6F9;">{{ loop.index }}. {{ item.text }}</div>
+                    {% endfor %}
+                  {% else %}
+                  <div style="padding-top:13px;font-size:16px;line-height:1.5;color:#FFFFFF;font-weight:600;">Low-activity brief</div>
+                  <div style="padding-top:5px;font-size:13px;line-height:1.55;color:#C7D5E3;">No strong Story met today’s primary threshold. No filler was promoted.</div>
+                  {% endif %}
+                </td></tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr><td style="padding:26px 26px 5px;">
+            <h2 style="margin:0;font-size:20px;line-height:1.25;color:#14243A;">Things That Matter</h2>
+            <div style="margin-top:6px;font-size:12px;line-height:1.5;color:#74808D;">Objective importance, then relevance to {{ briefing.view_name }}.</div>
+          </td></tr>
+          {% for story in briefing.primary_stories %}
+          <tr><td style="padding:17px 26px 19px;border-top:1px solid #D9E0E7;">
+            <div style="font-size:10px;line-height:1.4;letter-spacing:1px;text-transform:uppercase;color:#285A8E;font-weight:700;">{{ story.priority_band.value|replace('_', ' ') }} · {{ story.importance_band.value }} importance · {{ story.relevance_band.value }} relevance{% if story.region %} · {{ story.region }}{% endif %}</div>
+            <h3 style="margin:7px 0 11px;font-size:18px;line-height:1.35;color:#14243A;font-weight:700;">{{ story.headline }}</h3>
+            <div style="font-size:12px;line-height:1.4;color:#74808D;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Why it matters</div>
+            <div style="margin-top:4px;font-size:14px;line-height:1.62;color:#33465A;">{{ story.why_it_matters }}</div>
+            {% for reaction in story.market_reactions %}
+            <div style="margin-top:11px;padding:9px 11px;border-left:3px solid #246B4A;background:#F2F7F4;font-size:12px;line-height:1.55;color:#315343;">
+              {{ reaction.summary }}<br><span style="color:#607566;">Association {{ reaction.association_confidence.value }}</span>{% if reaction.uncertainty %}<br><span style="color:#725B2B;">{{ reaction.uncertainty }}</span>{% endif %}
+            </div>
             {% endfor %}
-          </table>
-          {% if not summary.market_leaders %}
-          <div style="padding:12px 0;color:#7a8793;font-size:14px;">No validated market data was available.</div>
-          {% endif %}
-        </td></tr>
-
-        <tr><td style="padding:22px 26px 8px;">
-          <h2 style="margin:0 0 12px;font-size:19px;color:#132238;">Top Global Events · {{ active_view }}</h2>
-          {% for event in events %}
-          {% set c7 = c7_scores.get(event.id) %}
-          <div style="padding:16px 0;border-top:1px solid #dfe4e8;">
-            <div style="font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:#6a7c8f;">{{ event.event_type.value }} · {% if c7 %}Priority {{ c7.priority_band.value }} · Importance {{ '%.1f'|format(c7.importance_score) }}/100 · Relevance {{ '%.1f'|format(c7.relevance_score) }}/100{% else %}Importance {{ '%.1f'|format(event.importance_score) }}/100{% endif %}</div>
-            <h3 style="margin:6px 0 8px;font-size:16px;line-height:1.4;color:#17202a;">{{ event.title }}</h3>
-            <div style="font-size:13px;color:#667583;line-height:1.5;">
-              Evidence {{ event.evidence_ids|length }} · Confidence {{ '%.0f'|format(event.confidence * 100) }}%
-            </div>
-            {% if c7 %}
-            <div style="margin-top:7px;font-size:12px;line-height:1.5;color:#596b7a;">
-              Global {{ c7.importance_band.value }} · View {{ c7.relevance_band.value }}
-              {% if c7.importance_reason_codes %} · {{ c7.importance_reason_codes|map(attribute='value')|join(', ') }}{% endif %}
-              {% if c7.relevance_reason_codes %} · {{ c7.relevance_reason_codes|map(attribute='value')|join(', ') }}{% endif %}
-            </div>
+            {% if story.sources %}
+            <div style="margin-top:12px;font-size:11px;line-height:1.55;color:#74808D;">{{ story.evidence_label }} · {% for source in story.sources %}{{ source.category.value|replace('_', ' ')|title }}: <a href="{{ source.url }}" style="color:#285A8E;text-decoration:underline;">{{ source.publisher }}</a>{% if not loop.last %} · {% endif %}{% endfor %}{% if story.supporting_source_count %} · +{{ story.supporting_source_count }} supporting{% endif %}</div>
             {% endif %}
-            {% set impacts = market_impacts.get(event.id, []) %}
-            {% if impacts %}
-            <div style="margin-top:12px;padding:12px;background:#f3f7f4;border-left:3px solid #4d8061;font-size:13px;line-height:1.55;color:#314a3b;">
-              <strong>Market reaction</strong>
-              {% for impact in impacts %}
-              <div style="margin-top:7px;">
-                {% if impact.direction.value == 'FLAT' %}
-                  {{ impact.target.name }}: limited / no meaningful immediate reaction ({{ '%+.2f'|format(impact.measurement.percentage_move) }}%) in the relevant daily close window.
-                {% else %}
-                  {{ impact.target.name }}: {{ '%+.2f'|format(impact.measurement.percentage_move) }}% in the {{ impact.reaction_window.value|replace('_', ' ')|lower }} daily close window.
-                {% endif %}
-                <div style="margin-top:3px;color:#58705f;">
-                  Magnitude {{ impact.magnitude.value }} · Association {{ impact.association_confidence.value }}
-                </div>
-                {% if impact.association_confidence.value == 'LOW' %}
-                <div style="margin-top:3px;">A market move occurred in the relevant daily window, but evidence is insufficient to attribute it to this Story.</div>
-                {% else %}
-                <div style="margin-top:3px;">The timing and configured semantic relationship are consistent with an association; this does not establish causality.</div>
-                {% endif %}
-                {% if 'MULTIPLE_PLAUSIBLE_EVENTS' in impact.reason_codes|map(attribute='value')|list %}
-                <div style="margin-top:3px;">Multiple plausible Events share this target and window; no single cause is assigned.</div>
-                {% endif %}
-              </div>
-              {% endfor %}
-            </div>
-            {% endif %}
-            <div style="margin-top:8px;font-size:13px;line-height:1.55;color:#4e5e6d;">
-              {% for document_id in event.source_document_ids %}
-                {% set source = sources[document_id] %}
-                <a href="{{ source.canonical_url }}" style="color:#245d93;text-decoration:underline;">{{ source.publisher }}</a>{% if not loop.last %} · {% endif %}
-              {% endfor %}
-              {% for evidence_id in event.evidence_ids %}
-                {% set item = evidence[evidence_id] %}
-                {% if item.source_kind.value == 'MARKET_OBSERVATION' %}
-                  <div style="margin-top:5px;">
-                    {{ item.locator.asset }} ({{ item.locator.symbol }}) ·
-                    Previous {{ '%.6g'|format(item.locator.previous_close) }} ·
-                    Latest {{ '%.6g'|format(item.locator.latest_close) }} ·
-                    {{ '%+.2f'|format(item.locator.change_pct) }}% ·
-                    {{ item.locator.observed_at }} · {{ item.locator.provider }}
-                  </div>
-                {% elif item.source_kind.value == 'MACRO_OBSERVATION' %}
-                  <div style="margin-top:5px;">
-                    {{ item.locator.series }} ({{ item.locator.series_id }}) ·
-                    Period {{ item.locator.period }} · Value {{ item.locator.value }} {{ item.locator.unit }}
-                    {% if item.locator.previous_value is not none %} · Previous {{ item.locator.previous_value }}{% endif %}
-                    {% if item.locator.change is not none %} · Change {{ '%+g'|format(item.locator.change) }} {{ item.locator.change_unit }} {{ item.locator.change_label }}{% endif %}
-                    · first observed by Radar {{ item.locator.radar_observed_at }} · {{ item.locator.provider }}
-                  </div>
-                {% endif %}
-              {% endfor %}
-            </div>
-            {% if event.event_type.value in ['market_move', 'risk'] %}
-            <div style="margin-top:12px;padding:12px;background:#f5f8fb;font-size:13px;line-height:1.55;color:#33485e;">
-              <strong>Possible drivers</strong>
-              {% set bundle = explanation_bundles.get(event.id) %}
-              {% set candidates = bundle.driver_candidates if bundle else [] %}
-              {% for candidate in candidates %}
-              <div style="margin-top:8px;">
-                {{ claims[candidate.interpretation_claim_id].text }}
-                <div style="margin-top:3px;color:#667583;">
-                  Confidence {{ candidate.confidence.value }} ·
-                  {{ candidate.temporal_relation.value|replace('_', ' ')|title }} ·
-                  {{ candidate.relevance_relation.value|replace('_', ' ')|title }}
-                </div>
-                <div style="margin-top:3px;">
-                  Provenance:
-                  {% for evidence_id in candidate.candidate_evidence_ids %}
-                    {% set candidate_evidence = evidence[evidence_id] %}
-                    {% if candidate_evidence.source_kind.value == 'DOCUMENT' %}
-                      {% set candidate_source = sources[candidate_evidence.source_id] %}
-                      <a href="{{ candidate_source.canonical_url }}" style="color:#245d93;text-decoration:underline;">{{ candidate_source.publisher }}</a>{% if not loop.last %} · {% endif %}
-                    {% endif %}
-                  {% endfor %}
-                </div>
-              </div>
-              {% endfor %}
-              {% if not candidates %}
-              <div style="margin-top:6px;color:#667583;">No evidence-backed driver identified.</div>
-              {% endif %}
-            </div>
-            {% set context_items = cross_asset_context.get(event.id, []) %}
-            {% if context_items %}
-            <div style="margin-top:10px;font-size:13px;line-height:1.55;color:#4e5e6d;">
-              <strong>Cross-asset context</strong>
-              {% for item in context_items %}<div style="margin-top:5px;">{{ item.text }}</div>{% endfor %}
-            </div>
-            {% endif %}
-            {% set backdrop_items = macro_backdrop.get(event.id, []) %}
-            {% if backdrop_items %}
-            <div style="margin-top:10px;font-size:13px;line-height:1.55;color:#4e5e6d;">
-              <strong>Macro backdrop</strong>
-              {% for item in backdrop_items %}<div style="margin-top:5px;">{{ item.text }}</div>{% endfor %}
-            </div>
-            {% endif %}
-            {% set structured_explanation = structured_explanations.get(event.id) %}
-            {% if event.event_type.value in ['market_move', 'risk'] and structured_explanation %}
-            <div style="margin-top:12px;padding:14px;background:#eef5fb;border-left:3px solid #4779a8;font-size:14px;line-height:1.55;color:#2f4357;">
-              <strong>AI explanation</strong>
-              <h4 style="margin:7px 0 5px;font-size:15px;color:#17202a;">{{ structured_explanation.headline }}</h4>
-              <div>{{ structured_explanation.summary }}</div>
-              {% for candidate_explanation in structured_explanation.candidate_explanations %}
-              <div style="margin-top:8px;padding-top:7px;border-top:1px solid #d8e4ef;">
-                <strong>Candidate {{ loop.index }}</strong>: {{ candidate_explanation.explanation }}
-              </div>
-              {% endfor %}
-              {% if structured_explanation.uncertainty %}
-              <div style="margin-top:8px;color:#6f5200;"><strong>Uncertainty:</strong> {{ structured_explanation.uncertainty }}</div>
-              {% endif %}
-              {% set generation = structured_explanation.generation %}
-              <div style="margin-top:9px;color:#667583;font-size:11px;">
-                Generated by {{ generation.provider }} · Requested model {{ generation.requested_model }}
-                {% if generation.returned_model %} · Returned model {{ generation.returned_model }}{% endif %}
-                {% if generation.input_tokens is not none %} · {{ generation.input_tokens }} input tokens{% endif %}
-                {% if generation.output_tokens is not none %} · {{ generation.output_tokens }} output tokens{% endif %}
-                {% if generation.total_tokens is not none %} · {{ generation.total_tokens }} total tokens{% endif %}
-                · {{ '%.2f'|format(generation.latency_seconds) }}s
-              </div>
-            </div>
-            {% endif %}
-            {% endif %}
-            {% set analysis = analyses.get(event.id) %}
-            {% if analysis and analysis.why_it_matters %}
-            <div style="margin-top:12px;padding:12px;background:#f5f8fb;font-size:14px;line-height:1.55;">
-              <strong>AI analysis{% if analysis.is_test_data %} — TEST DATA{% endif %}:</strong> {{ analysis.why_it_matters }}
-              <div style="margin-top:6px;"><strong>Bull:</strong> {{ analysis.bull_case }}</div>
-              <div style="margin-top:4px;"><strong>Bear:</strong> {{ analysis.bear_case }}</div>
-            </div>
-            {% endif %}
-          </div>
+          </td></tr>
           {% endfor %}
-          {% if not events %}
-          <div style="padding:12px 0;color:#7a8793;font-size:14px;">No event passed the deterministic extraction stage.</div>
+          {% if not briefing.primary_stories %}
+          <tr><td style="padding:16px 26px 22px;border-top:1px solid #D9E0E7;font-size:14px;line-height:1.6;color:#5E6C7B;">No strong Story met today’s primary threshold.</td></tr>
           {% endif %}
-        </td></tr>
 
-        <tr><td style="padding:22px 26px 8px;">
-          <h2 style="margin:0 0 10px;font-size:19px;color:#132238;">Macro</h2>
-          {% for headline in summary.macro_headlines %}
-          <div style="padding:9px 0;border-top:1px solid #edf0f2;font-size:14px;line-height:1.45;">{{ headline }}</div>
-          {% endfor %}
-          {% if not summary.macro_headlines %}
-          <div style="padding:12px 0;color:#7a8793;font-size:14px;">No validated macro observations were available.</div>
+          <tr><td style="padding:27px 26px 7px;border-top:1px solid #D9E0E7;"><h2 style="margin:0;font-size:19px;line-height:1.3;color:#14243A;">Market Reaction</h2></td></tr>
+          {% if briefing.market_reactions %}
+            {% for reaction in briefing.market_reactions %}
+            <tr><td style="padding:9px 26px;font-size:13px;line-height:1.55;color:#33465A;"><strong>{{ reaction.target_symbol }}</strong> · {{ reaction.summary }}{% if reaction.uncertainty %}<br><span style="color:#8A6423;">{{ reaction.uncertainty }}</span>{% endif %}</td></tr>
+            {% endfor %}
+          {% else %}
+          <tr><td style="padding:9px 26px 20px;font-size:13px;line-height:1.55;color:#74808D;">No validated linked reaction is available for today’s selected Stories.</td></tr>
           {% endif %}
-        </td></tr>
 
-        <tr><td style="padding:22px 26px 26px;">
-          <h2 style="margin:0 0 10px;font-size:19px;color:#132238;">Risk Radar</h2>
-          {% for flag in summary.risk_flags %}
-          <div style="padding:9px 0;border-top:1px solid #edf0f2;font-size:14px;line-height:1.45;">{{ flag }}</div>
-          {% endfor %}
-        </td></tr>
+          <tr><td style="padding:25px 26px 7px;border-top:1px solid #D9E0E7;"><h2 style="margin:0;font-size:19px;line-height:1.3;color:#14243A;">Under the Radar</h2></td></tr>
+          {% if briefing.under_radar %}
+            {% for item in briefing.under_radar %}
+            <tr><td style="padding:9px 26px 12px;font-size:13px;line-height:1.55;color:#33465A;"><strong>{{ item.headline }}</strong><br><span style="color:#74808D;">{{ item.note }}</span></td></tr>
+            {% endfor %}
+          {% else %}
+          <tr><td style="padding:9px 26px 20px;font-size:13px;line-height:1.55;color:#74808D;">No additional item cleared the conservative secondary threshold.</td></tr>
+          {% endif %}
 
-        <tr><td style="padding:18px 26px;background:#f5f7f9;color:#71808e;font-size:11px;line-height:1.55;border-top:1px solid #dfe4e8;">
-          Generated {{ generated_at.isoformat() }} · Run {{ run_id }} · Mode {{ data_mode }}.<br>
-          Research support only. No content in this report is investment advice. Source links and freshness should be verified before use.
-        </td></tr>
-      </table>
-    </td></tr>
+          <tr><td style="padding:25px 26px 7px;border-top:1px solid #D9E0E7;"><h2 style="margin:0;font-size:19px;line-height:1.3;color:#14243A;">Watch Today</h2></td></tr>
+          {% if briefing.watch_today %}
+            {% for item in briefing.watch_today %}
+            <tr><td style="padding:8px 26px 11px;font-size:13px;line-height:1.55;color:#33465A;">• {{ item.text }}</td></tr>
+            {% endfor %}
+          {% else %}
+          <tr><td style="padding:9px 26px 20px;font-size:13px;line-height:1.55;color:#74808D;">No watch item was inferred; C9 does not invent future catalysts.</td></tr>
+          {% endif %}
+
+          <tr><td style="padding:25px 26px 9px;border-top:1px solid #D9E0E7;"><h2 style="margin:0;font-size:19px;line-height:1.3;color:#14243A;">Market Snapshot</h2></td></tr>
+          {% if briefing.market_snapshot %}
+            {% for group in briefing.market_snapshot %}
+            <tr><td style="padding:8px 26px 11px;">
+              <div style="font-size:10px;line-height:1.4;letter-spacing:1px;text-transform:uppercase;color:#74808D;font-weight:700;">{{ group.name }}</div>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+                {% for item in group.items %}
+                <tr>
+                  <td style="padding:7px 0;border-bottom:1px solid #EDF0F3;font-size:13px;line-height:1.4;color:#33465A;">{{ item.name }}</td>
+                  <td align="right" style="padding:7px 0;border-bottom:1px solid #EDF0F3;font-size:13px;line-height:1.4;color:{% if item.change_pct >= 0 %}#246B4A{% else %}#8A4A42{% endif %};font-weight:700;white-space:nowrap;">{{ '%+.2f'|format(item.change_pct) }}%</td>
+                </tr>
+                {% endfor %}
+              </table>
+            </td></tr>
+            {% endfor %}
+          {% else %}
+          <tr><td style="padding:9px 26px 20px;font-size:13px;line-height:1.55;color:#74808D;">No completed market observation is available.</td></tr>
+          {% endif %}
+
+          <tr><td style="padding:24px 26px 28px;border-top:1px solid #D9E0E7;background:#F7F8FA;">
+            <h2 style="margin:0 0 8px;font-size:15px;line-height:1.3;color:#14243A;">Sources &amp; Data Quality</h2>
+            <div style="font-size:12px;line-height:1.65;color:#667482;">{{ briefing.data_quality.status }} · {{ briefing.data_quality.documents }} documents · {{ briefing.data_quality.events }} Events · {{ briefing.data_quality.markets }} market observations<br>{{ briefing.data_quality.sources_healthy }}/{{ briefing.data_quality.sources_total }} sources healthy · AI {{ briefing.data_quality.ai_status }} · Validated reaction coverage {% if briefing.data_quality.has_validated_market_reactions %}present{% else %}absent{% endif %}</div>
+            <div style="margin-top:13px;font-size:10px;line-height:1.55;color:#87929E;">Evidence-linked intelligence, not investment advice. Market reactions are observational associations and do not establish causality.</div>
+          </td></tr>
+        </table>
+      </td>
+    </tr>
   </table>
 </body>
 </html>

@@ -19,13 +19,14 @@ Implemented in this milestone:
 - Provider-neutral text-generation contract with DeepSeek transport and a controllable fake.
 - Deterministic `ExplanationBundle` prompt and strict structured-explanation parser.
 - Hard no-AI behavior when `AI_ENABLED=false` or `DAILY_LLM_BUDGET=0`.
-- Responsive HTML email report and disabled/file/SMTP email adapters.
+- Deterministic C9 Daily Intelligence product with an immutable briefing snapshot and
+  mobile-first editorial email.
 - CLI, tests and GitHub Actions CI/daily workflows.
 - Cloud-MVP preparation: Asia/Shanghai business date, scheduled live/no-AI execution,
   SMTP delivery, operational logs, failure-preserved artifacts, and optional PostgreSQL.
 
 Not implemented yet: SEC filing body/XBRL/exhibit extraction, licensed global market provider,
-earnings consensus/transcripts, C9 product redesign, weekly report or dashboard.
+earnings consensus/transcripts, weekly report or dashboard.
 
 ## Quick start
 
@@ -184,6 +185,41 @@ interpreted interval timestamps, prices, move, classifications, C6 basis, reason
 evaluation run and rule version. Exact identities may refresh idempotently; different runs,
 targets, windows and rule versions coexist.
 
+## C9 Daily Intelligence product
+
+C9 turns the validated C5-C8 artifacts into one deterministic daily product. The selection layer
+consumes canonical Events/Stories and the selected view's C7 scores; MARKET_MOVE and RISK Events
+remain supporting context and cannot enter the primary Story list. `MUST_READ` and `IMPORTANT`
+items are eligible, every CRITICAL item is retained, and the usual five-item cap remains soft only
+when more distinct CRITICAL items exist. `WATCH` never fills empty primary slots.
+
+Ordering is stable by priority band, importance band, relevance band, both scores, newest Event
+time and Event ID. Diversity is applied only within the same priority/importance strength tier:
+new regions and EventTypes are preferred before soft saturation at two items per EventType, two
+per primary entity and three per region. It never promotes a weaker item. Presentation suppression
+is conservative: only an already identical Story or a fully matching non-empty authority,
+release-domain, reference-period, EventType and region identity can be hidden. No fuzzy title,
+embedding or LLM clustering occurs in C9.
+
+The briefing contains `Overnight in 30 Seconds`, `Things That Matter`, bounded observational C8
+reactions, `Under the Radar`, `Watch Today`, a grouped market snapshot and compact quality state.
+Watch items refer only to existing Events or evaluated reactions; without a trusted future-event
+calendar, C9 invents no dates or catalysts. Explanation copy follows a strict hierarchy: matching
+structured AI candidate prose, linked C2 interpretation Claim, deterministic EventType semantics,
+then a conservative unavailable statement. AI never changes selection, section assignment or
+ordering, and no-AI mode produces the complete product.
+
+Additive migration `006_c9_daily_briefings` stores the full strict snapshot under
+`run_id + view_id + rule_version`. An identical write is idempotent; a different payload for the
+same identity fails closed. Different runs, views and rules coexist. Because the existing daily
+pipeline intentionally reuses one run identity for same-day retries, a retry reuses the already
+persisted C9 snapshot instead of rewriting history.
+
+The HTML template is a thin rendering layer over that snapshot. It uses a fluid 680px presentation
+table, inline email-safe styling and no JavaScript, external CSS or client-side ranking. The market
+adapter is still daily-bar only, C8 associations are not causal claims, and the product is not
+investment advice.
+
 ## AI configuration
 
 AI is an optional enhancement layer. The default is deterministic:
@@ -247,7 +283,7 @@ No credentials are stored in source control.
 
 ```bash
 uv run ruff check .
-uv run mypy src
+uv run mypy --strict src/radar
 uv run pytest
 ```
 
