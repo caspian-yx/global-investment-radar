@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Apple Newsroom</title>
+  <entry>
+    <title>Apple introduces a new generation of chips</title>
+    <link href="https://www.apple.com/newsroom/2026/09/apple-introduces-new-chips/" />
+    <id>https://www.apple.com/newsroom/2026/09/apple-introduces-new-chips/</id>
+    <updated>2026-09-10T14:00:00Z</updated>
+    <content type="html">&lt;p&gt;Apple announced new chips for its product lineup.&lt;/p&gt;</content>
+  </entry>
+</feed>

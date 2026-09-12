@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from radar.config import Settings
@@ -25,7 +28,12 @@ from radar.domain import (
     SourceTier,
     stable_id,
 )
-from radar.ingestion import IntelligenceProvider, build_source_document
+from radar.ingestion import (
+    IntelligenceProvider,
+    build_source_document,
+    canonicalize_source_url,
+    validate_source_attribution,
+)
 from radar.official_sources import SECFilingsProvider
 
 RSS_DIAGNOSTIC_KEYS = (
@@ -35,7 +43,93 @@ RSS_DIAGNOSTIC_KEYS = (
     "invalid_date",
     "invalid_link",
     "duplicate_items",
+    "content_truncated",
+    "items_limited",
 )
+SENSITIVE_URL_QUERY_FRAGMENTS = frozenset(
+    {
+        "accesstoken",
+        "apikey",
+        "authorization",
+        "credential",
+        "password",
+        "refreshtoken",
+        "secret",
+        "token",
+    }
+)
+
+
+def _url_contains_sensitive_material(url: str) -> bool:
+    parts = urlsplit(url)
+    if parts.username is not None or parts.password is not None:
+        return True
+    for key, _ in parse_qsl(parts.query, keep_blank_values=True):
+        normalized_key = "".join(
+            character for character in key.casefold() if character.isalnum()
+        )
+        if any(
+            fragment in normalized_key for fragment in SENSITIVE_URL_QUERY_FRAGMENTS
+        ):
+            return True
+    normalized_fragment = "".join(
+        character for character in parts.fragment.casefold() if character.isalnum()
+    )
+    return any(
+        fragment in normalized_fragment for fragment in SENSITIVE_URL_QUERY_FRAGMENTS
+    )
+
+
+class ResponseTooLargeError(ValueError):
+    """Raised when a feed exceeds its configured response-byte budget."""
+
+
+class RSSFeedConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    url: str = Field(min_length=1)
+    publisher: str = Field(min_length=1)
+    source_tier: SourceTier
+    source_category: SourceCategory
+    source_role: SourceRole
+    provider_name: str | None = Field(default=None, min_length=1)
+    native_ids_immutable: bool = False
+    region: str | None = Field(default=None, min_length=1)
+    language: str = Field(default="en", min_length=1)
+    publication_timezone: str = "UTC"
+    lookback_hours: int | None = Field(default=None, ge=1, le=168)
+    max_items: int = Field(default=25, ge=1, le=100)
+    max_response_bytes: int = Field(default=8_000_000, ge=1, le=10_000_000)
+    max_content_chars: int = Field(default=4_000, ge=1, le=20_000)
+    enabled: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def valid_http_url(cls, value: str) -> str:
+        parts = urlsplit(value)
+        if parts.scheme not in {"http", "https"} or not parts.netloc:
+            raise ValueError("RSS feed URL must use HTTP(S)")
+        if _url_contains_sensitive_material(value):
+            raise ValueError("RSS feed URL cannot contain sensitive material")
+        return value
+
+    @field_validator("publication_timezone")
+    @classmethod
+    def valid_publication_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown IANA timezone: {value}") from exc
+        return value
+
+    @model_validator(mode="after")
+    def valid_source_attribution(self) -> RSSFeedConfig:
+        validate_source_attribution(
+            self.source_category,
+            self.source_role,
+            self.source_tier,
+        )
+        return self
 
 
 @dataclass
@@ -399,13 +493,17 @@ class OfficialRSSProvider:
 
     def __init__(
         self,
-        feeds: list[dict[str, Any]],
+        feeds: Sequence[dict[str, Any] | RSSFeedConfig],
         lookback_hours: int,
         timeout: float = 15,
         *,
         name: str = "official-rss",
     ) -> None:
-        self.feeds = feeds
+        self.feeds = [
+            config
+            for feed in feeds
+            if (config := self._feed_config(feed)).enabled
+        ]
         self.lookback = timedelta(hours=lookback_hours)
         self.timeout = timeout
         self.name = name
@@ -414,25 +512,35 @@ class OfficialRSSProvider:
         documents: list[SourceDocument] = []
         warnings: list[str] = []
         diagnostics = {key: 0 for key in RSS_DIAGNOSTIC_KEYS}
-        diagnostics.update({"feeds_succeeded": 0, "feeds_failed": 0})
-        effective_lookback = self.lookback
-        if now.weekday() == 0 and effective_lookback < timedelta(hours=96):
-            effective_lookback = timedelta(hours=96)
+        diagnostics.update(
+            {"feeds_succeeded": 0, "feeds_failed": 0, "oversize_responses": 0}
+        )
         headers = {"User-Agent": "GlobalInvestmentRadar/0.1 (public-research-pipeline)"}
         with httpx.Client(timeout=self.timeout, follow_redirects=True, headers=headers) as client:
             for feed in self.feeds:
                 try:
-                    response = client.get(feed["url"])
-                    response.raise_for_status()
-                    parsed = self._parse(response.text, feed, now, effective_lookback)
+                    raw_xml = self._read_bounded_response(client, feed)
+                    effective_lookback = timedelta(
+                        hours=feed.lookback_hours
+                        if feed.lookback_hours is not None
+                        else int(self.lookback.total_seconds() // 3600)
+                    )
+                    parsed = self._parse(raw_xml, feed, now, effective_lookback)
                     documents.extend(parsed.documents)
                     diagnostics["feeds_succeeded"] += 1
                     for key in RSS_DIAGNOSTIC_KEYS:
                         diagnostics[key] += parsed.diagnostics[key]
+                except ResponseTooLargeError:
+                    diagnostics["feeds_failed"] += 1
+                    diagnostics["oversize_responses"] += 1
+                    warnings.append(
+                        f"{feed.publisher}: feed collection failed "
+                        "(ResponseTooLargeError)."
+                    )
                 except (httpx.HTTPError, ET.ParseError, ValueError) as exc:
                     diagnostics["feeds_failed"] += 1
                     warnings.append(
-                        f"{feed['publisher']}: feed collection failed "
+                        f"{feed.publisher}: feed collection failed "
                         f"({type(exc).__name__})."
                     )
         if self.feeds and diagnostics["feeds_failed"] == len(self.feeds):
@@ -459,13 +567,15 @@ class OfficialRSSProvider:
     def _parse(
         self,
         raw_xml: str,
-        feed: dict[str, Any],
+        feed: dict[str, Any] | RSSFeedConfig,
         now: datetime,
         lookback: timedelta,
     ) -> RSSParseResult:
+        config = self._feed_config(feed)
         root = ET.fromstring(raw_xml.lstrip("\ufeff"))
+        self._validate_feed_root(root)
         result = RSSParseResult()
-        seen_links: set[str] = set()
+        documents_by_url: dict[str, SourceDocument] = {}
         entries = [
             element
             for element in root.iter()
@@ -478,14 +588,15 @@ class OfficialRSSProvider:
             description = (
                 self._child_text(item, "description", "summary", "content") or ""
             )
-            clean = re.sub(r"<[^>]+>", " ", html.unescape(description))
-            clean = re.sub(r"\s+", " ", clean).strip()
             try:
-                published = self._published_at(item)
+                published, timezone_was_inferred = self._published_at(
+                    item,
+                    config.publication_timezone,
+                )
             except ValueError:
                 result.diagnostics["invalid_date"] += 1
                 continue
-            if published > now.astimezone(UTC) + timedelta(minutes=5):
+            if published > now.astimezone(UTC):
                 result.diagnostics["invalid_date"] += 1
                 continue
             if not self._valid_link(url):
@@ -495,42 +606,63 @@ class OfficialRSSProvider:
             if now.astimezone(UTC) - published > lookback:
                 result.diagnostics["filtered_by_date"] += 1
                 continue
-            if url in seen_links:
-                result.diagnostics["duplicate_items"] += 1
-                continue
-            seen_links.add(url)
+            clean, was_truncated = self._clean_content(
+                description or title,
+                config.max_content_chars,
+            )
+            if was_truncated:
+                result.diagnostics["content_truncated"] += 1
             native_id = (
                 self._child_text(item, "guid", "id")
-                if feed.get("native_ids_immutable") is True
+                if config.native_ids_immutable
                 else None
             )
-            feed_url = feed.get("url")
-            result.documents.append(
-                make_document(
-                    provider=self.name,
-                    tier=SourceTier(feed["source_tier"]),
-                    publisher=feed["publisher"],
-                    url=url,
-                    title=title,
-                    content=clean or title,
-                    published_at=published,
-                    collected_at=now,
-                    trusted_provider_native_id=native_id,
-                    source_category=SourceCategory(
-                        feed.get("source_category", SourceCategory.OTHER.value)
-                    ),
-                    source_role=SourceRole(
-                        feed.get("source_role", SourceRole.SECONDARY.value)
-                    ),
-                    region=feed.get("region"),
-                    provider_metadata=(
-                        {"feed_url": feed_url} if isinstance(feed_url, str) else {}
-                    ),
-                )
+            metadata: dict[str, JsonValue] = {"feed_url": config.url}
+            if timezone_was_inferred:
+                metadata["publication_timezone_inferred"] = config.publication_timezone
+            document = make_document(
+                provider=self.name,
+                tier=config.source_tier,
+                publisher=config.publisher,
+                url=url,
+                title=title,
+                content=clean or title[: config.max_content_chars].rstrip(),
+                published_at=published,
+                collected_at=now,
+                trusted_provider_native_id=native_id,
+                source_category=config.source_category,
+                source_role=config.source_role,
+                language=config.language,
+                region=config.region,
+                provider_metadata=metadata,
             )
+            canonical_url = canonicalize_source_url(url)
+            existing = documents_by_url.get(canonical_url)
+            if existing is not None:
+                result.diagnostics["duplicate_items"] += 1
+                if self._rss_document_preference(document) < self._rss_document_preference(
+                    existing
+                ):
+                    documents_by_url[canonical_url] = document
+            else:
+                documents_by_url[canonical_url] = document
+        ordered = sorted(
+            documents_by_url.values(),
+            key=lambda document: (
+                -document.published_at.timestamp(),
+                document.canonical_url,
+                document.id,
+            ),
+        )
+        result.diagnostics["items_limited"] = max(0, len(ordered) - config.max_items)
+        result.documents = ordered[: config.max_items]
         return result
 
-    def _published_at(self, item: ET.Element) -> datetime:
+    def _published_at(
+        self,
+        item: ET.Element,
+        publication_timezone: str = "UTC",
+    ) -> tuple[datetime, bool]:
         raw = self._child_text(item, "pubDate", "date", "updated", "published")
         if not raw:
             raise ValueError("missing publication date")
@@ -541,9 +673,69 @@ class OfficialRSSProvider:
                 parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
             except ValueError as exc:
                 raise ValueError("invalid publication date") from exc
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+        timezone_was_inferred = parsed.tzinfo is None
+        if timezone_was_inferred:
+            parsed = parsed.replace(tzinfo=ZoneInfo(publication_timezone))
+        return parsed.astimezone(UTC), timezone_was_inferred
+
+    def _read_bounded_response(
+        self,
+        client: httpx.Client,
+        feed: RSSFeedConfig,
+    ) -> str:
+        with client.stream("GET", feed.url) as response:
+            response.raise_for_status()
+            content_length = response.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    declared_length = int(content_length)
+                except ValueError:
+                    declared_length = None
+                if declared_length is not None and declared_length > feed.max_response_bytes:
+                    raise ResponseTooLargeError("declared response exceeds configured limit")
+            content = bytearray()
+            for chunk in response.iter_bytes():
+                content.extend(chunk)
+                if len(content) > feed.max_response_bytes:
+                    raise ResponseTooLargeError("response exceeds configured limit")
+            return bytes(content).decode(response.encoding or "utf-8")
+
+    def _clean_content(self, value: str, max_chars: int) -> tuple[str, bool]:
+        decoded = html.unescape(value)
+        without_active_content = re.sub(
+            r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>",
+            " ",
+            decoded,
+        )
+        clean = re.sub(r"<[^>]+>", " ", without_active_content)
+        clean = re.sub(r"\s+", " ", clean).strip()
+        if len(clean) <= max_chars:
+            return clean, False
+        return clean[:max_chars].rstrip(), True
+
+    def _rss_document_preference(
+        self, document: SourceDocument
+    ) -> tuple[float, str, str, str, str, str, str]:
+        canonical_payload = json.dumps(
+            document.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return (
+            -document.published_at.timestamp(),
+            document.title.casefold(),
+            document.content_hash,
+            document.provider_native_id or "",
+            document.original_url,
+            document.id,
+            canonical_payload,
+        )
+
+    def _feed_config(self, feed: dict[str, Any] | RSSFeedConfig) -> RSSFeedConfig:
+        if isinstance(feed, RSSFeedConfig):
+            return feed
+        return RSSFeedConfig.model_validate(feed)
 
     def _child_text(self, item: ET.Element, *names: str) -> str | None:
         for child in list(item):
@@ -554,18 +746,46 @@ class OfficialRSSProvider:
         return None
 
     def _link(self, item: ET.Element) -> str:
+        candidates: list[tuple[int, str, str]] = []
         for child in list(item):
             if self._local_name(child.tag) != "link":
                 continue
-            return (child.text or child.attrib.get("href") or "").strip()
-        return ""
+            relation = child.attrib.get("rel", "").strip().casefold()
+            if relation not in {"", "alternate"}:
+                continue
+            url = (child.text or child.attrib.get("href") or "").strip()
+            if not self._valid_link(url):
+                continue
+            media_type = child.attrib.get("type", "").strip().casefold()
+            media_priority = 0 if media_type in {"", "text/html"} else 1
+            candidates.append((media_priority, canonicalize_source_url(url), url))
+        return min(candidates)[2] if candidates else ""
 
     def _valid_link(self, url: str) -> bool:
-        parts = urlsplit(url)
-        return parts.scheme in {"http", "https"} and bool(parts.netloc)
+        try:
+            parts = urlsplit(url)
+            return (
+                parts.scheme in {"http", "https"}
+                and bool(parts.netloc)
+                and not _url_contains_sensitive_material(url)
+            )
+        except ValueError:
+            return False
 
     def _local_name(self, tag: str) -> str:
         return tag.rsplit("}", 1)[-1]
+
+    def _validate_feed_root(self, root: ET.Element) -> None:
+        root_name = self._local_name(root.tag).casefold()
+        if root_name == "feed":
+            return
+        if root_name == "rdf":
+            return
+        if root_name == "rss" and any(
+            self._local_name(child.tag).casefold() == "channel" for child in list(root)
+        ):
+            return
+        raise ValueError("response is not an RSS or Atom feed")
 
 
 def build_providers(
@@ -589,17 +809,20 @@ def build_providers(
         )
     unnamed_feeds: list[dict[str, Any]] = []
     for feed in universe["rss_feeds"]:
-        provider_name = feed.get("provider_name")
+        feed_config = RSSFeedConfig.model_validate(feed)
+        if not feed_config.enabled:
+            continue
+        provider_name = feed_config.provider_name
         if isinstance(provider_name, str) and provider_name.strip():
             providers.append(
                 OfficialRSSProvider(
-                    [feed],
+                    [feed_config],
                     settings.lookback_hours,
                     name=provider_name.strip(),
                 )
             )
         else:
-            unnamed_feeds.append(feed)
+            unnamed_feeds.append(feed_config.model_dump())
     if unnamed_feeds:
         providers.append(OfficialRSSProvider(unnamed_feeds, settings.lookback_hours))
     return providers

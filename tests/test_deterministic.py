@@ -18,7 +18,9 @@ from radar.domain import (
     ProviderRunStatus,
     ProviderStatus,
     ReportQualityStatus,
+    SourceCategory,
     SourceKind,
+    SourceRole,
     SourceTier,
 )
 from radar.providers import make_document
@@ -58,6 +60,8 @@ def test_near_duplicate_titles_cluster() -> None:
         title="Central bank keeps policy rate unchanged and retains data-dependent guidance",
         content="one",
         published_at=now,
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
     two = make_document(
         provider="test",
@@ -67,6 +71,8 @@ def test_near_duplicate_titles_cluster() -> None:
         title="Central bank keeps policy rate unchanged, retains data dependent guidance",
         content="two",
         published_at=now,
+        source_category=SourceCategory.PROFESSIONAL_NEWS,
+        source_role=SourceRole.SECONDARY,
     )
     assert title_similarity(one.title, two.title) > 0.68
     assert len(cluster_documents([one, two])) == 1
@@ -82,6 +88,8 @@ def test_official_document_event_keeps_fact_claim_and_document_provenance() -> N
         title="Federal Reserve keeps policy rate unchanged",
         content="The committee kept its policy rate unchanged.",
         published_at=now,
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
 
     events, claims, evidence = extract_events([[document]], [], now)

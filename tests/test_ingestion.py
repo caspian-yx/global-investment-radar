@@ -16,7 +16,9 @@ from radar.domain import (
 from radar.ingestion import (
     build_source_document,
     collect_intelligence_providers,
+    deduplicate_source_documents,
     source_document_id,
+    validate_source_attribution,
 )
 
 PUBLISHED_AT = datetime(2026, 9, 10, 8, tzinfo=UTC)
@@ -273,3 +275,144 @@ def test_duplicate_repeated_document_keeps_one_stable_identity() -> None:
 
     assert batches[0].documents[0].id == batches[1].documents[0].id
     assert batches[0].documents[0].content_hash != batches[1].documents[0].content_hash
+
+
+@pytest.mark.parametrize(
+    ("category", "role", "tier"),
+    [
+        (SourceCategory.OFFICIAL, SourceRole.PRIMARY, SourceTier.A),
+        (SourceCategory.REGULATORY, SourceRole.PRIMARY, SourceTier.A),
+        (SourceCategory.COMPANY_PRIMARY, SourceRole.PRIMARY, SourceTier.A),
+        (SourceCategory.PROFESSIONAL_NEWS, SourceRole.SECONDARY, SourceTier.B),
+        (SourceCategory.PROFESSIONAL_NEWS, SourceRole.SECONDARY, SourceTier.C),
+        (SourceCategory.AGGREGATOR, SourceRole.SECONDARY, SourceTier.C),
+        (SourceCategory.AGGREGATOR, SourceRole.SECONDARY, SourceTier.D),
+        (SourceCategory.COMMUNITY, SourceRole.SECONDARY, SourceTier.D),
+        (SourceCategory.OTHER, SourceRole.PRIMARY, SourceTier.B),
+        (SourceCategory.OTHER, SourceRole.SECONDARY, SourceTier.D),
+    ],
+)
+def test_source_attribution_policy_accepts_explicit_allowed_combinations(
+    category: SourceCategory,
+    role: SourceRole,
+    tier: SourceTier,
+) -> None:
+    validate_source_attribution(category, role, tier)
+
+
+@pytest.mark.parametrize(
+    ("category", "role", "tier"),
+    [
+        (SourceCategory.OFFICIAL, SourceRole.SECONDARY, SourceTier.A),
+        (SourceCategory.OFFICIAL, SourceRole.PRIMARY, SourceTier.B),
+        (SourceCategory.REGULATORY, SourceRole.SECONDARY, SourceTier.A),
+        (SourceCategory.COMPANY_PRIMARY, SourceRole.PRIMARY, SourceTier.B),
+        (SourceCategory.PROFESSIONAL_NEWS, SourceRole.PRIMARY, SourceTier.B),
+        (SourceCategory.PROFESSIONAL_NEWS, SourceRole.SECONDARY, SourceTier.A),
+        (SourceCategory.AGGREGATOR, SourceRole.PRIMARY, SourceTier.C),
+        (SourceCategory.AGGREGATOR, SourceRole.SECONDARY, SourceTier.B),
+        (SourceCategory.COMMUNITY, SourceRole.SECONDARY, SourceTier.C),
+        (SourceCategory.OTHER, SourceRole.SECONDARY, SourceTier.A),
+    ],
+)
+def test_source_attribution_policy_rejects_upward_or_inconsistent_claims(
+    category: SourceCategory,
+    role: SourceRole,
+    tier: SourceTier,
+) -> None:
+    with pytest.raises(ValueError, match="source attribution"):
+        validate_source_attribution(category, role, tier)
+
+
+def _cross_provider_document(
+    *,
+    provider: str,
+    category: SourceCategory,
+    role: SourceRole,
+    tier: SourceTier,
+    content: str = "Shared release body.",
+    native_id: str | None = None,
+) -> SourceDocument:
+    return build_source_document(
+        provider=provider,
+        trusted_provider_native_id=native_id,
+        source_category=category,
+        source_role=role,
+        tier=tier,
+        publisher=f"{provider} publisher",
+        url="https://EXAMPLE.test/release?id=7&utm_source=feed#top",
+        title="Shared release",
+        content=content,
+        language="en",
+        region="US",
+        published_at=PUBLISHED_AT,
+        collected_at=COLLECTED_AT,
+    )
+
+
+def test_document_deduplication_collapses_identical_ids_and_reports_diagnostics() -> None:
+    document = _document(native_id="release-42")
+
+    result = deduplicate_source_documents([document, document.model_copy(deep=True)])
+
+    assert result.documents == [document]
+    assert result.diagnostics == {
+        "input_documents": 2,
+        "output_documents": 1,
+        "duplicate_ids": 1,
+        "duplicate_urls": 0,
+    }
+
+
+def test_document_deduplication_fails_closed_for_conflicting_equal_ids() -> None:
+    first = _document(native_id="release-42", content="Original body.")
+    conflicting = _document(native_id="release-42", content="Changed body.")
+
+    with pytest.raises(ValueError, match="conflicting SourceDocument id"):
+        deduplicate_source_documents([first, conflicting])
+
+
+def test_document_deduplication_prefers_direct_primary_source_for_exact_url() -> None:
+    aggregator = _cross_provider_document(
+        provider="aggregator",
+        category=SourceCategory.AGGREGATOR,
+        role=SourceRole.SECONDARY,
+        tier=SourceTier.C,
+    )
+    official = _cross_provider_document(
+        provider="authority",
+        category=SourceCategory.OFFICIAL,
+        role=SourceRole.PRIMARY,
+        tier=SourceTier.A,
+    )
+
+    result = deduplicate_source_documents([aggregator, official])
+
+    assert result.documents == [official]
+    assert result.diagnostics == {
+        "input_documents": 2,
+        "output_documents": 1,
+        "duplicate_ids": 0,
+        "duplicate_urls": 1,
+    }
+
+
+def test_document_deduplication_is_independent_of_provider_order() -> None:
+    first = _cross_provider_document(
+        provider="alpha-company",
+        category=SourceCategory.COMPANY_PRIMARY,
+        role=SourceRole.PRIMARY,
+        tier=SourceTier.A,
+    )
+    second = _cross_provider_document(
+        provider="zeta-official",
+        category=SourceCategory.OFFICIAL,
+        role=SourceRole.PRIMARY,
+        tier=SourceTier.A,
+    )
+
+    forward = deduplicate_source_documents([second, first])
+    reverse = deduplicate_source_documents([first, second])
+
+    assert forward == reverse
+    assert forward.documents == [second]

@@ -4,20 +4,26 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 
-from radar.config import Settings
+from radar.config import Settings, load_universe
+from radar.deterministic import cluster_documents, extract_events
 from radar.domain import (
     CollectionBatch,
+    EventType,
     MarketObservation,
     ProviderStatus,
     SourceCategory,
     SourceRole,
+    SourceTier,
     stable_id,
 )
+from radar.ingestion import deduplicate_source_documents
 from radar.providers import (
     BLSMacroProvider,
     DemoProvider,
     OfficialRSSProvider,
+    RSSFeedConfig,
     YahooChartProvider,
     build_providers,
 )
@@ -42,6 +48,124 @@ SEC_FEED = {
     "native_ids_immutable": True,
     "region": "US",
 }
+
+APPROVED_FEED_FIXTURES = [
+    (
+        "boj_whatsnew.xml",
+        {
+            "provider_name": "bank-of-japan-whats-new-rss",
+            "url": "https://www.boj.or.jp/en/rss/whatsnew.xml",
+            "publisher": "Bank of Japan",
+            "source_tier": "A",
+            "source_category": "official",
+            "source_role": "primary",
+            "region": "JP",
+            "language": "en",
+        },
+        datetime(2026, 9, 11, 1, tzinfo=UTC),
+        SourceCategory.OFFICIAL,
+    ),
+    (
+        "bok_monetary_policy.xml",
+        {
+            "provider_name": "bank-of-korea-monetary-policy-rss",
+            "url": "https://www.bok.or.kr/eng/bbs/E0000627/news.rss?menuNo=400022",
+            "publisher": "Bank of Korea",
+            "source_tier": "A",
+            "source_category": "official",
+            "source_role": "primary",
+            "region": "KR",
+            "language": "en",
+        },
+        datetime(2026, 9, 10, 0, tzinfo=UTC),
+        SourceCategory.OFFICIAL,
+    ),
+    (
+        "nbs_china_releases.xml",
+        {
+            "provider_name": "china-nbs-releases-rss",
+            "url": "https://www.stats.gov.cn/english/PressRelease/rss.xml",
+            "publisher": "National Bureau of Statistics of China",
+            "source_tier": "A",
+            "source_category": "official",
+            "source_role": "primary",
+            "region": "CN",
+            "language": "en",
+            "publication_timezone": "Asia/Shanghai",
+        },
+        datetime(2026, 9, 10, 1, 30, 1, tzinfo=UTC),
+        SourceCategory.OFFICIAL,
+    ),
+    (
+        "eia_today_in_energy.xml",
+        {
+            "provider_name": "us-eia-today-in-energy-rss",
+            "url": "https://www.eia.gov/rss/todayinenergy.xml",
+            "publisher": "U.S. Energy Information Administration",
+            "source_tier": "A",
+            "source_category": "official",
+            "source_role": "primary",
+            "region": "US",
+            "language": "en",
+        },
+        datetime(2026, 9, 10, 13, tzinfo=UTC),
+        SourceCategory.OFFICIAL,
+    ),
+    (
+        "apple_newsroom.xml",
+        {
+            "provider_name": "apple-newsroom-rss",
+            "url": "https://www.apple.com/newsroom/rss-feed.rss",
+            "publisher": "Apple Newsroom",
+            "source_tier": "A",
+            "source_category": "company_primary",
+            "source_role": "primary",
+            "region": "US",
+            "language": "en",
+        },
+        datetime(2026, 9, 10, 14, tzinfo=UTC),
+        SourceCategory.COMPANY_PRIMARY,
+    ),
+    (
+        "nvidia_press_releases.xml",
+        {
+            "provider_name": "nvidia-press-releases-rss",
+            "url": "https://nvidianews.nvidia.com/cats/press_release.xml",
+            "publisher": "NVIDIA Newsroom",
+            "source_tier": "A",
+            "source_category": "company_primary",
+            "source_role": "primary",
+            "region": "US",
+            "language": "en",
+        },
+        datetime(2026, 9, 10, 8, tzinfo=UTC),
+        SourceCategory.COMPANY_PRIMARY,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"url": "ftp://example.test/feed.xml"},
+        {"publication_timezone": "Mars/Olympus"},
+        {"max_items": 101},
+        {"max_response_bytes": 10_000_001},
+        {"source_role": "secondary"},
+        {"api_key": "must-not-enter-feed-config"},
+        {"url": "https://user:password@example.test/feed.xml"},
+        {"url": "https://example.test/feed.xml?api_key=must-not-persist"},
+        {"url": "https://example.test/feed.xml?access_token=must-not-persist"},
+        {"publisher": "   "},
+        {"language": "   "},
+        {"provider_name": "   "},
+    ],
+)
+def test_rss_feed_configuration_fails_closed_for_invalid_policy_or_bounds(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        RSSFeedConfig.model_validate({**FED_FEED, **overrides})
 
 
 def test_warning_does_not_automatically_degrade_provider_status() -> None:
@@ -97,6 +221,8 @@ def test_fed_rss_fixture_parses_with_rfc2822_date() -> None:
         "invalid_date": 0,
         "invalid_link": 0,
         "duplicate_items": 0,
+        "content_truncated": 0,
+        "items_limited": 0,
     }
 
 
@@ -162,6 +288,32 @@ def test_namespaced_atom_entry_parses_link_summary_and_updated_date() -> None:
     assert result.documents[0].published_at == datetime(2026, 9, 7, 20, tzinfo=UTC)
 
 
+@pytest.mark.parametrize("reverse_links", [False, True])
+def test_atom_parser_uses_alternate_page_link_regardless_of_link_order(
+    reverse_links: bool,
+) -> None:
+    links = [
+        '<link rel="self" href="https://example.test/feed/entry-7" />',
+        '<link rel="alternate" type="text/html" href="https://example.test/policy" />',
+    ]
+    if reverse_links:
+        links.reverse()
+    raw = f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+      <title>Policy update</title>{''.join(links)}
+      <updated>2026-09-07T20:00:00Z</updated>
+    </entry></feed>"""
+    provider = OfficialRSSProvider([], lookback_hours=48)
+
+    result = provider._parse(
+        raw,
+        FED_FEED,
+        datetime(2026, 9, 8, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+
+    assert result.documents[0].canonical_url == "https://example.test/policy"
+
+
 def test_namespaced_rss_and_malformed_items_are_counted_without_aborting() -> None:
     raw = """<rss xmlns="urn:example:rss"><channel>
       <item>
@@ -189,7 +341,7 @@ def test_namespaced_rss_and_malformed_items_are_counted_without_aborting() -> No
 
     result = provider._parse(raw, FED_FEED, datetime(2026, 9, 8, tzinfo=UTC), timedelta(hours=48))
 
-    assert [document.title for document in result.documents] == ["Current item"]
+    assert [document.title for document in result.documents] == ["Duplicate"]
     assert result.diagnostics == {
         "total_entries": 5,
         "parsed_entries": 3,
@@ -197,6 +349,8 @@ def test_namespaced_rss_and_malformed_items_are_counted_without_aborting() -> No
         "invalid_date": 1,
         "invalid_link": 1,
         "duplicate_items": 1,
+        "content_truncated": 0,
+        "items_limited": 0,
     }
 
 
@@ -205,6 +359,10 @@ def test_naive_iso_date_uses_utc_and_future_item_is_rejected() -> None:
       <entry>
         <title>Naive current item</title><link href="https://example.test/current" />
         <updated>2026-09-07T20:00:00</updated>
+      </entry>
+      <entry>
+        <title>Near future item</title><link href="https://example.test/near-future" />
+        <updated>2026-09-08T00:01:00Z</updated>
       </entry>
       <entry>
         <title>Future item</title><link href="https://example.test/future" />
@@ -217,7 +375,296 @@ def test_naive_iso_date_uses_utc_and_future_item_is_rejected() -> None:
 
     assert [document.title for document in result.documents] == ["Naive current item"]
     assert result.documents[0].published_at == datetime(2026, 9, 7, 20, tzinfo=UTC)
-    assert result.diagnostics["invalid_date"] == 1
+    assert result.diagnostics["invalid_date"] == 2
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "feed", "expected_published_at", "expected_category"),
+    APPROVED_FEED_FIXTURES,
+)
+def test_approved_feed_fixtures_preserve_provenance_and_publication_time(
+    fixture_name: str,
+    feed: dict[str, object],
+    expected_published_at: datetime,
+    expected_category: SourceCategory,
+) -> None:
+    provider = OfficialRSSProvider([], lookback_hours=168)
+    universe = load_universe(Settings(_env_file=None))
+    registered_feeds = {
+        item["provider_name"]: item for item in universe["rss_feeds"]
+    }
+    registered_feed = registered_feeds[str(feed["provider_name"])]
+
+    result = provider._parse(
+        (FIXTURES / fixture_name).read_text(encoding="utf-8"),
+        registered_feed,
+        datetime(2026, 9, 11, 12, tzinfo=UTC),
+        timedelta(hours=168),
+    )
+
+    assert len(result.documents) == 1
+    document = result.documents[0]
+    assert document.published_at == expected_published_at
+    assert document.source_category is expected_category
+    assert document.source_role is SourceRole.PRIMARY
+    assert document.source_tier is SourceTier.A
+    assert document.region == registered_feed["region"]
+    assert document.language == "en"
+    assert document.provider_native_id is None
+    assert document.provider_metadata["feed_url"] == registered_feed["url"]
+    if fixture_name == "nbs_china_releases.xml":
+        assert document.provider_metadata["publication_timezone_inferred"] == registered_feed[
+            "publication_timezone"
+        ]
+
+
+def test_approved_source_families_enter_provider_neutral_event_extraction() -> None:
+    now = datetime(2026, 9, 11, 12, tzinfo=UTC)
+    universe = load_universe(Settings(_env_file=None))
+    registered_feeds = {
+        item["provider_name"]: item for item in universe["rss_feeds"]
+    }
+    provider = OfficialRSSProvider([], lookback_hours=168)
+    documents = []
+    for fixture_name, feed, _, _ in APPROVED_FEED_FIXTURES:
+        documents.extend(
+            provider._parse(
+                (FIXTURES / fixture_name).read_text(encoding="utf-8"),
+                registered_feeds[str(feed["provider_name"])],
+                now,
+                timedelta(hours=168),
+            ).documents
+        )
+
+    normalized = deduplicate_source_documents(documents).documents
+    events, _, _ = extract_events(
+        cluster_documents(normalized),
+        universe["entities"],
+        now,
+    )
+    event_types = {event.title: event.event_type for event in events}
+
+    assert len(normalized) == len(events) == 6
+    assert event_types == {
+        "Statement on Monetary Policy": EventType.POLICY,
+        "Monetary Policy Decision": EventType.POLICY,
+        "Consumer Prices in August 2026": EventType.MACRO,
+        "Global oil inventories increased in August": EventType.SUPPLY_CHAIN,
+        "Apple introduces a new generation of chips": EventType.PRODUCT,
+        "NVIDIA launches accelerated computing platform": EventType.PRODUCT,
+    }
+
+
+def test_rss_parser_canonicalizes_duplicates_before_accepting_items() -> None:
+    raw = """<rss><channel>
+      <item><title>First</title>
+        <link>https://example.test/release?id=7&amp;utm_source=feed</link>
+        <pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate></item>
+      <item><title>Duplicate</title>
+        <link>https://EXAMPLE.test/release?id=7#top</link>
+        <pubDate>Thu, 10 Sep 2026 13:00:00 GMT</pubDate></item>
+    </channel></rss>"""
+    provider = OfficialRSSProvider([], lookback_hours=48)
+
+    result = provider._parse(
+        raw,
+        FED_FEED,
+        datetime(2026, 9, 11, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+
+    assert [document.title for document in result.documents] == ["Duplicate"]
+    assert result.documents[0].canonical_url == "https://example.test/release?id=7"
+    assert result.diagnostics["duplicate_items"] == 1
+
+
+@pytest.mark.parametrize(
+    "unsafe_url",
+    [
+        "https://user:password@example.test/release",
+        "https://example.test/release?token=must-not-persist",
+        "https://example.test/release#access_token=must-not-persist",
+    ],
+)
+def test_rss_parser_rejects_item_urls_with_embedded_secrets(unsafe_url: str) -> None:
+    raw = f"""<rss><channel><item><title>Unsafe link</title>
+      <link>{unsafe_url.replace('&', '&amp;')}</link>
+      <pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+    provider = OfficialRSSProvider([], lookback_hours=48)
+
+    result = provider._parse(
+        raw,
+        FED_FEED,
+        datetime(2026, 9, 11, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+
+    assert result.documents == []
+    assert result.diagnostics["invalid_link"] == 1
+
+
+def test_rss_provider_local_dedupe_has_stable_native_id_tie_breaker() -> None:
+    items = [
+        """<item><title>Same release</title>
+          <link>https://example.test/release?utm_source=one</link><guid>native-b</guid>
+          <pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>
+          <description>Same body.</description></item>""",
+        """<item><title>Same release</title>
+          <link>https://EXAMPLE.test/release#top</link><guid>native-a</guid>
+          <pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>
+          <description>Same body.</description></item>""",
+    ]
+    feed = {**FED_FEED, "native_ids_immutable": True}
+    provider = OfficialRSSProvider([], lookback_hours=48)
+
+    forward = provider._parse(
+        f"<rss><channel>{''.join(items)}</channel></rss>",
+        feed,
+        datetime(2026, 9, 11, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+    reverse = provider._parse(
+        f"<rss><channel>{''.join(reversed(items))}</channel></rss>",
+        feed,
+        datetime(2026, 9, 11, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+
+    assert forward.documents == reverse.documents
+    assert forward.documents[0].provider_native_id == "native-a"
+
+
+def test_rss_provider_local_dedupe_orders_timezone_provenance_metadata() -> None:
+    items = [
+        """<item><title>Same release</title><link>https://example.test/release</link>
+          <pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>
+          <description>Same body.</description></item>""",
+        """<item><title>Same release</title><link>https://example.test/release</link>
+          <pubDate>2026-09-10T12:00:00</pubDate>
+          <description>Same body.</description></item>""",
+    ]
+    provider = OfficialRSSProvider([], lookback_hours=48)
+
+    forward = provider._parse(
+        f"<rss><channel>{''.join(items)}</channel></rss>",
+        FED_FEED,
+        datetime(2026, 9, 11, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+    reverse = provider._parse(
+        f"<rss><channel>{''.join(reversed(items))}</channel></rss>",
+        FED_FEED,
+        datetime(2026, 9, 11, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+
+    assert forward.documents == reverse.documents
+
+
+def test_rss_parser_sorts_then_applies_item_and_content_limits() -> None:
+    raw = """<rss><channel>
+      <item><title>Oldest</title><link>https://example.test/oldest</link>
+        <pubDate>Thu, 10 Sep 2026 10:00:00 GMT</pubDate>
+        <description>Short body.</description></item>
+      <item><title>Newest</title><link>https://example.test/newest</link>
+        <pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>
+        <description>&lt;script&gt;steal()&lt;/script&gt;
+          &lt;p&gt;A deliberately long clean body for truncation.&lt;/p&gt;
+        </description></item>
+      <item><title>Middle</title><link>https://example.test/middle</link>
+        <pubDate>Thu, 10 Sep 2026 11:00:00 GMT</pubDate>
+        <description>Middle body.</description></item>
+    </channel></rss>"""
+    feed = {**FED_FEED, "max_items": 2, "max_content_chars": 25}
+    provider = OfficialRSSProvider([], lookback_hours=48)
+
+    result = provider._parse(
+        raw,
+        feed,
+        datetime(2026, 9, 11, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+
+    assert [document.title for document in result.documents] == ["Newest", "Middle"]
+    assert result.documents[0].content == "A deliberately long clean"
+    assert "steal" not in result.documents[0].content
+    assert result.diagnostics["content_truncated"] == 1
+    assert result.diagnostics["items_limited"] == 1
+
+
+def test_rss_collection_fails_cleanly_when_response_exceeds_configured_limit(
+    monkeypatch,
+) -> None:
+    raw = (FIXTURES / "fed_press_feed.xml").read_text(encoding="utf-8")
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw.encode(), request=request)
+
+    monkeypatch.setattr(
+        "radar.providers.httpx.Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    feed = {**FED_FEED, "max_response_bytes": 64}
+
+    batch = OfficialRSSProvider([feed], lookback_hours=168).collect(
+        datetime(2026, 9, 8, tzinfo=UTC)
+    )
+
+    assert batch.status is ProviderStatus.FAILED
+    assert batch.documents == []
+    assert batch.diagnostics["oversize_responses"] == 1
+    assert all("fed_press_feed" not in warning for warning in batch.warnings)
+
+
+def test_rss_feed_lookback_override_remains_strict_on_monday(monkeypatch) -> None:
+    raw = """<rss><channel><item><title>Two hours old</title>
+      <link>https://example.test/two-hours-old</link>
+      <pubDate>Mon, 14 Sep 2026 10:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=raw, request=request)
+
+    monkeypatch.setattr(
+        "radar.providers.httpx.Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    feed = {**FED_FEED, "lookback_hours": 1}
+
+    batch = OfficialRSSProvider([feed], lookback_hours=168).collect(
+        datetime(2026, 9, 14, 12, tzinfo=UTC)
+    )
+
+    assert batch.status is ProviderStatus.NO_DATA
+    assert batch.documents == []
+    assert batch.diagnostics["filtered_by_date"] == 1
+
+
+def test_rss_http_200_non_feed_document_is_a_provider_failure(monkeypatch) -> None:
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="<html><body>Proxy login page</body></html>",
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        "radar.providers.httpx.Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    batch = OfficialRSSProvider([FED_FEED], lookback_hours=48).collect(
+        datetime(2026, 9, 14, 12, tzinfo=UTC)
+    )
+
+    assert batch.status is ProviderStatus.FAILED
+    assert batch.diagnostics["feeds_succeeded"] == 0
+    assert batch.diagnostics["feeds_failed"] == 1
 
 
 def test_rss_no_new_items_is_no_data_with_parse_diagnostics(monkeypatch) -> None:
@@ -350,6 +797,59 @@ def test_build_providers_registers_sec_and_distinct_named_rss_instances() -> Non
         "federal-reserve-monetary-rss",
         "sec-newsroom-rss",
     ]
+
+
+def test_build_providers_excludes_disabled_rss_feed() -> None:
+    universe = {
+        "assets": [],
+        "rss_feeds": [
+            {**FED_FEED, "provider_name": "enabled-feed", "enabled": True},
+            {**SEC_FEED, "provider_name": "disabled-feed", "enabled": False},
+        ],
+    }
+    settings = Settings(_env_file=None, DATA_MODE="live")
+
+    providers = build_providers(settings, universe)
+
+    assert [provider.name for provider in providers] == [
+        "experimental-yahoo-chart",
+        "bls-public-api",
+        "enabled-feed",
+    ]
+
+
+def test_live_universe_registers_approved_c5_2_sources_with_explicit_bounds() -> None:
+    universe = load_universe(Settings(_env_file=None))
+    feeds = {feed["provider_name"]: feed for feed in universe["rss_feeds"]}
+    expected = {
+        "bank-of-japan-whats-new-rss",
+        "bank-of-korea-monetary-policy-rss",
+        "china-nbs-releases-rss",
+        "us-eia-today-in-energy-rss",
+        "apple-newsroom-rss",
+        "nvidia-press-releases-rss",
+    }
+
+    assert expected <= feeds.keys()
+    for provider_name in expected:
+        feed = feeds[provider_name]
+        assert feed["enabled"] is True
+        assert 1 <= feed["lookback_hours"] <= 168
+        assert 1 <= feed["max_items"] <= 100
+        assert 1 <= feed["max_response_bytes"] <= 10_000_000
+        assert 1 <= feed["max_content_chars"] <= 20_000
+        assert feed["language"] == "en"
+        RSSFeedConfig.model_validate(feed)
+
+    entity_ids = {entity["id"] for entity in universe["entities"]}
+    assert {
+        "bank-of-japan",
+        "bank-of-korea",
+        "china-nbs",
+        "us-eia",
+        "apple",
+        "nvidia",
+    } <= entity_ids
 
 
 def test_yahoo_complete_collection_is_ok_despite_experimental_warning(monkeypatch) -> None:

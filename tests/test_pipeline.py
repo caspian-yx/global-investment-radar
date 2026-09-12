@@ -19,6 +19,8 @@ from radar.domain import (
     MarketObservation,
     ProviderStatus,
     ReportQualityStatus,
+    SourceCategory,
+    SourceRole,
     SourceTier,
     StructuredAnalysis,
     stable_id,
@@ -60,6 +62,8 @@ def c6_authorized_fed_batch(now: datetime) -> CollectionBatch:
         content="The Federal Reserve announced a federal funds rate decision.",
         published_at=now - timedelta(hours=24),
         region="US",
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
     market = MarketObservation(
         id=stable_id("market", f"c6-ai|^GSPC|{now.isoformat()}"),
@@ -167,6 +171,70 @@ def test_pipeline_uses_one_unified_provider_collection_seam(tmp_path, monkeypatc
     assert result.documents == 5
     assert result.markets == 8
     assert result.macro == 3
+
+
+@pytest.mark.parametrize("reverse_provider_order", [False, True])
+def test_pipeline_deduplicates_exact_canonical_url_before_story_clustering(
+    tmp_path,
+    monkeypatch,
+    reverse_provider_order: bool,
+) -> None:
+    now = datetime(2026, 9, 11, 12, tzinfo=UTC)
+    official = make_document(
+        provider="zeta-official",
+        tier=SourceTier.A,
+        publisher="Example Authority",
+        url="https://EXAMPLE.test/releases/policy?id=7&utm_source=rss#top",
+        title="Example Authority announces policy decision",
+        content="The authority published the direct policy decision.",
+        published_at=now - timedelta(hours=2),
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
+    )
+    aggregator = make_document(
+        provider="alpha-aggregator",
+        tier=SourceTier.C,
+        publisher="Example Aggregator",
+        url="https://example.test/releases/policy?id=7",
+        title="Example Authority announces policy decision",
+        content="An aggregator copied the same decision.",
+        published_at=now - timedelta(hours=1),
+        source_category=SourceCategory.AGGREGATOR,
+        source_role=SourceRole.SECONDARY,
+    )
+    batches = [
+        CollectionBatch(provider="zeta-official", documents=[official]),
+        CollectionBatch(provider="alpha-aggregator", documents=[aggregator]),
+    ]
+    if reverse_provider_order:
+        batches.reverse()
+    monkeypatch.setattr(
+        "radar.pipeline.build_providers",
+        lambda settings, universe: [StaticProvider(batch) for batch in batches],
+    )
+    settings = Settings(
+        app_env="test",
+        data_mode="live",
+        database_url=(
+            f"sqlite:///{(tmp_path / f'dedupe-{reverse_provider_order}.db').as_posix()}"
+        ),
+        report_output_dir=tmp_path / f"reports-{reverse_provider_order}",
+        ai_enabled=False,
+        email_mode="disabled",
+    )
+
+    result = run_daily(settings, now=now)
+
+    assert result.documents == 1
+    assert result.official_events == 1
+    store = RadarStore(settings.database_url)
+    with store.engine.connect() as connection:
+        provider = connection.execute(select(source_documents.c.provider)).scalar_one()
+        event_payload = json.loads(
+            connection.execute(select(events_table.c.payload_json)).scalar_one()
+        )
+    assert provider == "zeta-official"
+    assert event_payload["source_document_ids"] == [official.id]
 
 
 def test_pipeline_is_idempotent_for_same_business_day(tmp_path) -> None:
@@ -617,6 +685,8 @@ def test_pipeline_combines_official_market_and_macro_events_before_optional_llm(
         title="Federal Reserve <script>alert(1)</script> keeps policy rate unchanged",
         content="The committee kept its policy rate unchanged.",
         published_at=now,
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
     market = MarketObservation(
         id=stable_id("market", "test|^GSPC|2026-09-09"),
@@ -1020,6 +1090,8 @@ def test_c6_rejects_sec_ponzi_before_c2_and_empty_bundle_uses_zero_ai_requests(
         content="The Securities and Exchange Commission announced an enforcement action.",
         published_at=now - timedelta(hours=24),
         region="US",
+        source_category=SourceCategory.REGULATORY,
+        source_role=SourceRole.PRIMARY,
     )
     market = MarketObservation(
         id=stable_id("market", "c6-hard-negative|3033.HK|2026-09-10"),
@@ -1306,6 +1378,8 @@ def test_pipeline_persists_and_renders_evidence_backed_driver(tmp_path, monkeypa
         title="Federal Reserve announces interest rate decision",
         content="The Federal Reserve announced a federal funds rate decision.",
         published_at=datetime(2026, 9, 8, 20, tzinfo=UTC),
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
     market = MarketObservation(
         id=stable_id("market", "driver|^GSPC|2026-09-09"),
@@ -1407,6 +1481,8 @@ def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatc
         content="The Federal Reserve announced a federal funds rate decision.",
         published_at=now.replace(day=8),
         region="US",
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
     prior_b = make_document(
         provider="official-rss",
@@ -1417,6 +1493,8 @@ def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatc
         content="An independent report covered the federal funds rate decision.",
         published_at=now.replace(day=8, hour=21),
         region="US",
+        source_category=SourceCategory.PROFESSIONAL_NEWS,
+        source_role=SourceRole.SECONDARY,
     )
     ambiguous = make_document(
         provider="official-rss",
@@ -1427,6 +1505,8 @@ def test_report_renders_multiple_high_and_ambiguous_drivers(tmp_path, monkeypatc
         content="The consumer price index showed inflation pressures.",
         published_at=now.replace(hour=18),
         region="US",
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
     market = MarketObservation(
         id=stable_id("market", "multi-driver|^GSPC|2026-09-09"),
@@ -1499,6 +1579,8 @@ def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch)
         content="The official statement explicitly named the S&P 500.",
         published_at=now.replace(day=8),
         region="US",
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
     broad_a = make_document(
         provider="official-rss",
@@ -1509,6 +1591,8 @@ def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch)
         content="The consumer price index showed inflation pressures.",
         published_at=now.replace(day=8, hour=18),
         region="US",
+        source_category=SourceCategory.OFFICIAL,
+        source_role=SourceRole.PRIMARY,
     )
     broad_b = make_document(
         provider="official-rss",
@@ -1519,6 +1603,8 @@ def test_pipeline_renders_shared_semantic_candidate_order(tmp_path, monkeypatch)
         content="An independent report covered the consumer price index.",
         published_at=now.replace(day=8, hour=19),
         region="US",
+        source_category=SourceCategory.PROFESSIONAL_NEWS,
+        source_role=SourceRole.SECONDARY,
     )
     market = MarketObservation(
         id=stable_id("market", "ranked-pipeline|^GSPC|2026-09-09"),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -24,6 +25,54 @@ logger = logging.getLogger(__name__)
 
 TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
 
+SOURCE_ATTRIBUTION_POLICY: dict[
+    SourceCategory, set[tuple[SourceRole, SourceTier]]
+] = {
+    SourceCategory.OFFICIAL: {(SourceRole.PRIMARY, SourceTier.A)},
+    SourceCategory.REGULATORY: {(SourceRole.PRIMARY, SourceTier.A)},
+    SourceCategory.COMPANY_PRIMARY: {(SourceRole.PRIMARY, SourceTier.A)},
+    SourceCategory.PROFESSIONAL_NEWS: {
+        (SourceRole.SECONDARY, SourceTier.B),
+        (SourceRole.SECONDARY, SourceTier.C),
+    },
+    SourceCategory.AGGREGATOR: {
+        (SourceRole.SECONDARY, SourceTier.C),
+        (SourceRole.SECONDARY, SourceTier.D),
+    },
+    SourceCategory.COMMUNITY: {(SourceRole.SECONDARY, SourceTier.D)},
+    SourceCategory.OTHER: {
+        (SourceRole.PRIMARY, SourceTier.B),
+        (SourceRole.PRIMARY, SourceTier.C),
+        (SourceRole.PRIMARY, SourceTier.D),
+        (SourceRole.SECONDARY, SourceTier.B),
+        (SourceRole.SECONDARY, SourceTier.C),
+        (SourceRole.SECONDARY, SourceTier.D),
+    },
+}
+
+SOURCE_CATEGORY_PRIORITY = {
+    SourceCategory.OFFICIAL: 0,
+    SourceCategory.REGULATORY: 1,
+    SourceCategory.COMPANY_PRIMARY: 2,
+    SourceCategory.PROFESSIONAL_NEWS: 3,
+    SourceCategory.OTHER: 4,
+    SourceCategory.AGGREGATOR: 5,
+    SourceCategory.COMMUNITY: 6,
+}
+SOURCE_ROLE_PRIORITY = {SourceRole.PRIMARY: 0, SourceRole.SECONDARY: 1}
+SOURCE_TIER_PRIORITY = {
+    SourceTier.A: 0,
+    SourceTier.B: 1,
+    SourceTier.C: 2,
+    SourceTier.D: 3,
+}
+
+
+@dataclass(frozen=True)
+class DocumentDedupeResult:
+    documents: list[SourceDocument]
+    diagnostics: dict[str, int]
+
 
 class IntelligenceProvider(Protocol):
     """Single collection contract for external intelligence/data adapters."""
@@ -31,6 +80,20 @@ class IntelligenceProvider(Protocol):
     name: str
 
     def collect(self, collected_at: datetime) -> CollectionBatch: ...
+
+
+def validate_source_attribution(
+    source_category: SourceCategory,
+    source_role: SourceRole,
+    source_tier: SourceTier,
+) -> None:
+    """Reject source-quality claims that are inconsistent with the source class."""
+    if (source_role, source_tier) not in SOURCE_ATTRIBUTION_POLICY[source_category]:
+        raise ValueError(
+            "Invalid source attribution: "
+            f"category={source_category.value}, role={source_role.value}, "
+            f"tier={source_tier.value}"
+        )
 
 
 def canonicalize_source_url(url: str) -> str:
@@ -100,6 +163,7 @@ def build_source_document(
     is_demo: bool = False,
 ) -> SourceDocument:
     """Normalize one provider item into the canonical document contract."""
+    validate_source_attribution(source_category, source_role, tier)
     canonical_url = canonicalize_source_url(url)
     normalized_content = f"{title.strip()}\n{content.strip()}"
     return SourceDocument(
@@ -133,6 +197,56 @@ def build_source_document(
         provider_metadata=provider_metadata or {},
         content_hash=content_hash(normalized_content),
         is_demo=is_demo,
+    )
+
+
+def _source_preference(document: SourceDocument) -> tuple[int, int, int, str, str]:
+    return (
+        SOURCE_CATEGORY_PRIORITY[document.source_category],
+        SOURCE_ROLE_PRIORITY[document.source_role],
+        SOURCE_TIER_PRIORITY[document.source_tier],
+        _normalized_identity_text(document.provider),
+        document.id,
+    )
+
+
+def deduplicate_source_documents(
+    documents: Iterable[SourceDocument],
+) -> DocumentDedupeResult:
+    """Conservatively deduplicate exact IDs and exact canonical URLs."""
+    source_documents = list(documents)
+    by_id: dict[str, SourceDocument] = {}
+    duplicate_ids = 0
+    for document in source_documents:
+        existing = by_id.get(document.id)
+        if existing is None:
+            by_id[document.id] = document
+            continue
+        if existing != document:
+            raise ValueError(f"conflicting SourceDocument id: {document.id}")
+        duplicate_ids += 1
+
+    by_url: dict[str, list[SourceDocument]] = {}
+    for document in by_id.values():
+        canonical_url = canonicalize_source_url(document.canonical_url)
+        by_url.setdefault(canonical_url, []).append(document)
+
+    selected: list[SourceDocument] = []
+    duplicate_urls = 0
+    for canonical_url in sorted(by_url):
+        candidates = by_url[canonical_url]
+        selected.append(min(candidates, key=_source_preference))
+        duplicate_urls += len(candidates) - 1
+
+    result = sorted(selected, key=lambda document: document.id)
+    return DocumentDedupeResult(
+        documents=result,
+        diagnostics={
+            "input_documents": len(source_documents),
+            "output_documents": len(result),
+            "duplicate_ids": duplicate_ids,
+            "duplicate_urls": duplicate_urls,
+        },
     )
 
 

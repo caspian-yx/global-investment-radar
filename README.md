@@ -8,7 +8,9 @@ Implemented in this milestone:
 
 - Provider interface with isolated failures.
 - Reproducible synthetic demo provider with visible safety labels.
-- Optional live providers: official Federal Reserve/ECB/SEC feeds, SEC Submissions metadata, official BLS API, and an experimental Yahoo chart adapter.
+- Optional live providers: bounded official and company-primary feeds across the US,
+  Europe, China, Korea and Japan; SEC Submissions metadata; the official BLS API;
+  and an experimental Yahoo chart adapter.
 - Canonical, provider-isolated intelligence ingestion with deterministic source provenance and stable document identity.
 - Deterministic normalization, URL cleanup, near-duplicate clustering, event classification, entity mapping and explainable importance ranking.
 - Evidence-first `SourceDocument → Evidence → Claim → Event` domain model.
@@ -52,6 +54,9 @@ uv run radar daily --data-mode live --no-ai
 Live mode currently combines:
 
 - Federal Reserve monetary-policy, ECB press-release and SEC newsroom RSS feeds.
+- Bank of Japan English updates, Bank of Korea monetary-policy decisions, National
+  Bureau of Statistics of China English releases and U.S. EIA Today in Energy.
+- Apple Newsroom and NVIDIA press releases as the initial company-primary portfolio.
 - Recent SEC filing metadata for the configured CIK watchlist. Set `SEC_CONTACT_EMAIL`
   so requests carry the SEC-required application contact identity.
 - BLS public macro API.
@@ -79,12 +84,27 @@ not used for downstream ranking or event semantics. Published and collected time
 timezone-aware and normalized to UTC; `retrieved_at` is accepted only for legacy input/read
 compatibility, while new serialization uses `collected_at`.
 
+Source attribution is fail-closed: official, regulatory and company-primary records must be
+primary Tier A sources; professional news is secondary Tier B/C; aggregators are secondary
+Tier C/D; and community sources are secondary Tier D. `other` cannot claim Tier A. Each RSS
+feed declares an IANA timezone fallback plus explicit lookback, item, response-byte and
+content-character limits. Declared timestamp offsets always take precedence over the fallback.
+
 Document identity prefers an explicitly trusted provider-native immutable ID, then provider plus
 conservatively canonicalized URL, then stable provider/publisher/title/publication fields.
 `content_hash` is a version fingerprint and no longer changes identity. This intentionally causes
 a one-time ID transition for documents created under the earlier content-dependent rule; no old
 database migration is performed. Future cursor, `since`, ETag and Last-Modified state can be
 added at the provider boundary without changing deterministic downstream contracts.
+
+After provider collection, exact document IDs and exact canonical URLs are deduplicated before
+story clustering. Conflicting payloads under one ID fail closed; cross-provider URL duplicates
+prefer direct primary and higher-quality sources through a stable total order. C5.2 deliberately
+does not merge similar titles or inferred stories at ingestion time.
+
+HKMA remains deferred because its current feed exposes date-level publication precision.
+GDELT and commercial media feeds remain deferred until rate limits, timestamp semantics and
+reuse rights satisfy the same provenance contract.
 
 ## AI configuration
 
@@ -180,7 +200,7 @@ remaining human checklist.
 
 ## Architecture extension points
 
-- Add data sources by implementing `DataProvider.collect()` and returning a validated `CollectionBatch`.
+- Add data sources by implementing `IntelligenceProvider.collect()` and returning a validated `CollectionBatch`.
 - Add a text-generation backend by implementing `LLMProvider.generate(LLMRequest)`.
 - Add delivery channels by implementing `EmailSender.send()`.
 - Core financial data models remain provider-independent.

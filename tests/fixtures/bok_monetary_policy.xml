@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Bank of Korea Monetary Policy Decisions</title>
+    <item>
+      <title>Monetary Policy Decision</title>
+      <link>https://www.bok.or.kr/eng/bbs/E0000627/view.do?nttId=10000001</link>
+      <guid>10000001</guid>
+      <pubDate>Thu, 10 Sep 2026 09:00:00 +0900</pubDate>
+      <description><![CDATA[<p>The Monetary Policy Board decided to maintain the Base Rate.</p>]]></description>
+    </item>
+  </channel>
+</rss>

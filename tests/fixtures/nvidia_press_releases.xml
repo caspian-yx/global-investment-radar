@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>NVIDIA Press Releases</title>
+    <item>
+      <title>NVIDIA launches accelerated computing platform</title>
+      <link>https://nvidianews.nvidia.com/news/nvidia-launches-platform</link>
+      <guid>https://nvidianews.nvidia.com/news/nvidia-launches-platform</guid>
+      <pubDate>Thu, 10 Sep 2026 08:00:00 GMT</pubDate>
+      <description><![CDATA[<p>NVIDIA launched a new data center computing platform.</p>]]></description>
+      <content:encoded><![CDATA[<p>Full press release content.</p>]]></content:encoded>
+    </item>
+  </channel>
+</rss>

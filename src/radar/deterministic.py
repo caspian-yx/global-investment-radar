@@ -38,10 +38,30 @@ EVENT_RULES: list[tuple[EventType, tuple[str, ...]]] = [
     (EventType.EARNINGS, ("earnings", "revenue", "eps", "margin", "profit")),
     (EventType.GUIDANCE, ("guidance", "outlook", "forecast", "raises", "cuts")),
     (EventType.M_AND_A, ("acquire", "acquisition", "merger", "takeover")),
-    (EventType.POLICY, ("rate", "fomc", "central bank", "policy", "regulation")),
-    (EventType.MACRO, ("inflation", "cpi", "employment", "gdp", "pce", "payroll")),
-    (EventType.SUPPLY_CHAIN, ("supply", "shortage", "inventory", "capacity")),
-    (EventType.PRODUCT, ("launch", "product", "approval", "trial result")),
+    (
+        EventType.POLICY,
+        ("rate", "rates", "fomc", "central bank", "policy", "regulation", "regulations"),
+    ),
+    (
+        EventType.MACRO,
+        (
+            "inflation",
+            "consumer price index",
+            "cpi",
+            "employment",
+            "gdp",
+            "pce",
+            "payroll",
+        ),
+    ),
+    (
+        EventType.SUPPLY_CHAIN,
+        ("supply", "shortage", "inventory", "inventories", "capacity"),
+    ),
+    (
+        EventType.PRODUCT,
+        ("launch", "launched", "launches", "product", "approval", "trial result"),
+    ),
     (EventType.LEGAL, ("sec", "lawsuit", "fine", "enforcement", "investigation")),
     (EventType.RISK, ("war", "tariff", "sanction", "default", "bankruptcy")),
 ]
@@ -104,7 +124,10 @@ def cluster_documents(documents: list[SourceDocument]) -> list[list[SourceDocume
 def classify_event(text: str) -> EventType:
     lowered = text.casefold()
     for event_type, keywords in EVENT_RULES:
-        if any(keyword in lowered for keyword in keywords):
+        if any(
+            re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", lowered)
+            for keyword in keywords
+        ):
             return event_type
     return EventType.OTHER
 

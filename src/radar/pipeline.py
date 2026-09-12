@@ -36,7 +36,7 @@ from radar.explanation import (
     unique_by_id,
     validate_driver_candidate_bundle,
 )
-from radar.ingestion import collect_intelligence_providers
+from radar.ingestion import collect_intelligence_providers, deduplicate_source_documents
 from radar.llm import AnalysisProvider, LLMError, build_generation_provider, build_llm_provider
 from radar.macro import build_macro_source_document
 from radar.providers import build_providers
@@ -204,7 +204,11 @@ def _run_started_pipeline(
             batch.diagnostics,
         )
 
-    documents = _flatten(batch.documents for batch in batches)
+    document_dedupe = deduplicate_source_documents(
+        _flatten(batch.documents for batch in batches)
+    )
+    documents = document_dedupe.documents
+    logger.info("Document ingestion deduplication diagnostics=%s", document_dedupe.diagnostics)
     markets = _flatten(batch.markets for batch in batches)
     macro = _flatten(batch.macro for batch in batches)
     macro_source_document_ids = {
