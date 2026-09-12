@@ -112,6 +112,32 @@
               {% if c7.relevance_reason_codes %} · {{ c7.relevance_reason_codes|map(attribute='value')|join(', ') }}{% endif %}
             </div>
             {% endif %}
+            {% set impacts = market_impacts.get(event.id, []) %}
+            {% if impacts %}
+            <div style="margin-top:12px;padding:12px;background:#f3f7f4;border-left:3px solid #4d8061;font-size:13px;line-height:1.55;color:#314a3b;">
+              <strong>Market reaction</strong>
+              {% for impact in impacts %}
+              <div style="margin-top:7px;">
+                {% if impact.direction.value == 'FLAT' %}
+                  {{ impact.target.name }}: limited / no meaningful immediate reaction ({{ '%+.2f'|format(impact.measurement.percentage_move) }}%) in the relevant daily close window.
+                {% else %}
+                  {{ impact.target.name }}: {{ '%+.2f'|format(impact.measurement.percentage_move) }}% in the {{ impact.reaction_window.value|replace('_', ' ')|lower }} daily close window.
+                {% endif %}
+                <div style="margin-top:3px;color:#58705f;">
+                  Magnitude {{ impact.magnitude.value }} · Association {{ impact.association_confidence.value }}
+                </div>
+                {% if impact.association_confidence.value == 'LOW' %}
+                <div style="margin-top:3px;">A market move occurred in the relevant daily window, but evidence is insufficient to attribute it to this Story.</div>
+                {% else %}
+                <div style="margin-top:3px;">The timing and configured semantic relationship are consistent with an association; this does not establish causality.</div>
+                {% endif %}
+                {% if 'MULTIPLE_PLAUSIBLE_EVENTS' in impact.reason_codes|map(attribute='value')|list %}
+                <div style="margin-top:3px;">Multiple plausible Events share this target and window; no single cause is assigned.</div>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </div>
+            {% endif %}
             <div style="margin-top:8px;font-size:13px;line-height:1.55;color:#4e5e6d;">
               {% for document_id in event.source_document_ids %}
                 {% set source = sources[document_id] %}

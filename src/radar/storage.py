@@ -39,6 +39,7 @@ from radar.domain import (
     StoryDocumentMembership,
     stable_id,
 )
+from radar.impact import MarketImpactRecord
 from radar.importance import C7Score
 from radar.ranking import rank_driver_candidates
 
@@ -47,6 +48,7 @@ EVIDENCE_PROVENANCE_MIGRATION = "001_c1_evidence_provenance"
 DRIVER_CANDIDATE_MIGRATION = "002_c2_1_driver_candidates"
 STORY_CONSOLIDATION_MIGRATION = "003_c6_3_story_consolidation"
 C7_IMPORTANCE_RELEVANCE_MIGRATION = "004_c7_importance_relevance"
+C8_MARKET_REACTIONS_MIGRATION = "005_c8_market_reactions"
 
 runs = Table(
     "runs",
@@ -194,6 +196,39 @@ Index(
 )
 Index("ix_c7_rankings_view_rank", c7_rankings_table.c.view_id, c7_rankings_table.c.priority_rank)
 
+c8_market_impacts_table = Table(
+    "c8_market_impacts",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("record_id", String(36), nullable=False, index=True),
+    Column("run_id", String(36), nullable=False, index=True),
+    Column("story_id", String(36)),
+    Column("event_id", String(36), nullable=False),
+    Column("target_symbol", String(48), nullable=False),
+    Column("reaction_window", String(24), nullable=False),
+    Column("rule_version", String(40), nullable=False),
+    Column("evaluated_at", DateTime(timezone=True), nullable=False),
+    Column("direction", String(16), nullable=False),
+    Column("magnitude", String(16), nullable=False),
+    Column("association_confidence", String(16), nullable=False),
+    Column("epistemic_status", String(24), nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ux_c8_impacts_run_event_target_window_rule",
+    c8_market_impacts_table.c.run_id,
+    c8_market_impacts_table.c.event_id,
+    c8_market_impacts_table.c.target_symbol,
+    c8_market_impacts_table.c.reaction_window,
+    c8_market_impacts_table.c.rule_version,
+    unique=True,
+)
+Index(
+    "ix_c8_impacts_event_target",
+    c8_market_impacts_table.c.event_id,
+    c8_market_impacts_table.c.target_symbol,
+)
+
 market_table = Table(
     "market_observations",
     metadata,
@@ -248,6 +283,96 @@ class RadarStore:
         self._migrate_c1_to_c2_1()
         self._migrate_c2_1_to_c6_3()
         self._migrate_c6_3_to_c7()
+        self._migrate_c7_to_c8()
+
+    def _migrate_c7_to_c8(self) -> None:
+        """Apply and validate additive C8 market-impact persistence."""
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(80) PRIMARY KEY,
+                    applied_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+            self._validate_c8_schema(connection)
+            applied = connection.execute(
+                text("SELECT version FROM schema_migrations WHERE version = :version"),
+                {"version": C8_MARKET_REACTIONS_MIGRATION},
+            ).first()
+            if applied is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO schema_migrations (version, applied_at) "
+                        "VALUES (:version, :applied_at)"
+                    ),
+                    {
+                        "version": C8_MARKET_REACTIONS_MIGRATION,
+                        "applied_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+
+    def _validate_c8_schema(self, connection: Connection) -> None:
+        inspector = inspect(connection)
+        required_columns = {
+            "id",
+            "record_id",
+            "run_id",
+            "story_id",
+            "event_id",
+            "target_symbol",
+            "reaction_window",
+            "rule_version",
+            "evaluated_at",
+            "direction",
+            "magnitude",
+            "association_confidence",
+            "epistemic_status",
+            "payload_json",
+        }
+        columns = {
+            column["name"]: column for column in inspector.get_columns("c8_market_impacts")
+        }
+        if not required_columns <= set(columns):
+            missing = ", ".join(sorted(required_columns - set(columns)))
+            raise RuntimeError(f"C8 migration is incomplete: c8_market_impacts missing {missing}")
+        expected_types = {"evaluated_at": DateTime, "payload_json": Text}
+        for name, expected_type in expected_types.items():
+            if not isinstance(columns[name]["type"], expected_type):
+                raise RuntimeError(f"C8 migration is incomplete: invalid impact column {name}")
+        for name, column in columns.items():
+            if name != "story_id" and column["nullable"]:
+                raise RuntimeError(f"C8 migration is incomplete: nullable impact column {name}")
+        if inspector.get_pk_constraint("c8_market_impacts")["constrained_columns"] != ["id"]:
+            raise RuntimeError("C8 migration is incomplete: invalid impact primary key")
+        indexes = inspector.get_indexes("c8_market_impacts")
+        identity_columns = [
+            "run_id",
+            "event_id",
+            "target_symbol",
+            "reaction_window",
+            "rule_version",
+        ]
+        if not any(
+            index["column_names"] == identity_columns and index["unique"] for index in indexes
+        ):
+            raise RuntimeError("C8 migration is incomplete: identity index missing")
+        invalid_rows = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM c8_market_impacts "
+                "WHERE id IS NULL OR TRIM(id) = '' "
+                "OR record_id IS NULL OR TRIM(record_id) = '' "
+                "OR run_id IS NULL OR TRIM(run_id) = '' "
+                "OR event_id IS NULL OR TRIM(event_id) = '' "
+                "OR target_symbol IS NULL OR TRIM(target_symbol) = '' "
+                "OR reaction_window IS NULL OR TRIM(reaction_window) = '' "
+                "OR rule_version IS NULL OR TRIM(rule_version) = '' "
+                "OR payload_json IS NULL OR TRIM(payload_json) = ''"
+            )
+        ).scalar_one()
+        if invalid_rows:
+            raise RuntimeError("C8 migration is incomplete: invalid persisted rows")
 
     def _migrate_c6_3_to_c7(self) -> None:
         """Apply and validate additive C7 score persistence."""
@@ -869,6 +994,74 @@ class RadarStore:
                 .order_by(c7_rankings_table.c.priority_rank, c7_rankings_table.c.event_id)
             ).scalars()
             return [C7Score.model_validate_json(payload) for payload in payloads]
+
+    def save_market_impacts(
+        self, run_id: str, items: Iterable[MarketImpactRecord]
+    ) -> None:
+        """Persist versioned C8 evaluations; refresh only an exact evaluation identity."""
+        for item in items:
+            row_id = stable_id("c8-evaluation", f"{run_id}|{item.id}")
+            payload = item.model_dump_json()
+            values = {
+                "id": row_id,
+                "record_id": item.id,
+                "run_id": run_id,
+                "story_id": item.story_id,
+                "event_id": item.event_id,
+                "target_symbol": item.target.symbol,
+                "reaction_window": item.reaction_window.value,
+                "rule_version": item.rule_version,
+                "evaluated_at": item.evaluated_at,
+                "direction": item.direction.value,
+                "magnitude": item.magnitude.value,
+                "association_confidence": item.association_confidence.value,
+                "epistemic_status": item.epistemic_status.value,
+                "payload_json": payload,
+            }
+            with self.engine.begin() as connection:
+                existing = connection.execute(
+                    select(c8_market_impacts_table.c.payload_json).where(
+                        c8_market_impacts_table.c.id == row_id
+                    )
+                ).scalar_one_or_none()
+                if existing is not None:
+                    if existing != payload:
+                        connection.execute(
+                            c8_market_impacts_table.update()
+                            .where(c8_market_impacts_table.c.id == row_id)
+                            .values(**values)
+                        )
+                    continue
+                conflicting = connection.execute(
+                    select(c8_market_impacts_table.c.id).where(
+                        c8_market_impacts_table.c.run_id == run_id,
+                        c8_market_impacts_table.c.event_id == item.event_id,
+                        c8_market_impacts_table.c.target_symbol == item.target.symbol,
+                        c8_market_impacts_table.c.reaction_window == item.reaction_window.value,
+                        c8_market_impacts_table.c.rule_version == item.rule_version,
+                    )
+                ).first()
+                if conflicting is not None and conflicting.id != row_id:
+                    raise ValueError("C8 market impact identity is not deterministic")
+                connection.execute(c8_market_impacts_table.insert().values(**values))
+
+    def load_market_impacts(
+        self, run_id: str, rule_version: str
+    ) -> list[MarketImpactRecord]:
+        with self.engine.connect() as connection:
+            payloads = connection.execute(
+                select(c8_market_impacts_table.c.payload_json)
+                .where(
+                    c8_market_impacts_table.c.run_id == run_id,
+                    c8_market_impacts_table.c.rule_version == rule_version,
+                )
+                .order_by(
+                    c8_market_impacts_table.c.event_id,
+                    c8_market_impacts_table.c.target_symbol,
+                    c8_market_impacts_table.c.reaction_window,
+                )
+            ).scalars()
+            return [MarketImpactRecord.model_validate_json(payload) for payload in payloads]
 
     def load_stories(self, rule_version: str) -> list[Story]:
         with self.engine.connect() as connection:

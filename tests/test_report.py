@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from radar.domain import (
+    AssetClass,
     CandidateExplanation,
     DeterministicSummary,
     Event,
@@ -10,7 +11,30 @@ from radar.domain import (
     GenerationMetadata,
     ReportQualityAssessment,
     ReportQualityStatus,
+    SessionKind,
     StructuredExplanation,
+)
+from radar.impact import (
+    C8_RULE_VERSION,
+    AssociationConfidence,
+    BarDateBasis,
+    EpistemicStatus,
+    ImpactMagnitude,
+    ImpactReason,
+    ImpactTargetKind,
+    MarketImpactRecord,
+    MarketTargetSnapshot,
+    ReactionDirection,
+    ReactionMeasurement,
+    ReactionProfile,
+    ReactionWindow,
+    TransmissionBasisSnapshot,
+    market_impact_id,
+)
+from radar.relevance import (
+    RELATIONSHIP_RULE_VERSION,
+    RelationshipReason,
+    TransmissionChannel,
 )
 from radar.report import HtmlReportRenderer, report_context
 
@@ -112,6 +136,85 @@ def _explanation(*, uncertainty: str | None = None) -> StructuredExplanation:
     )
 
 
+def _impact(
+    *,
+    move: float = -1.2,
+    confidence: AssociationConfidence = AssociationConfidence.MEDIUM,
+    ambiguous: bool = False,
+) -> MarketImpactRecord:
+    magnitude = ImpactMagnitude.FLAT if abs(move) < 0.1 else ImpactMagnitude.MODERATE
+    direction = (
+        ReactionDirection.FLAT
+        if magnitude is ImpactMagnitude.FLAT
+        else ReactionDirection.UP
+        if move > 0
+        else ReactionDirection.DOWN
+    )
+    reasons = {
+        ImpactReason.C6_AUTHORIZED,
+        ImpactReason.DIRECT_ENTITY_TARGET,
+        ImpactReason.POST_EVENT_REACTION,
+        ImpactReason.SAME_SESSION,
+        ImpactReason.STRONG_TEMPORAL_ALIGNMENT,
+        ImpactReason.NO_MEANINGFUL_REACTION
+        if magnitude is ImpactMagnitude.FLAT
+        else ImpactReason.MATERIAL_MOVE,
+    }
+    if ambiguous:
+        reasons.add(ImpactReason.MULTIPLE_PLAUSIBLE_EVENTS)
+    return MarketImpactRecord(
+        id=market_impact_id(
+            story_id=None,
+            event_id="target-event",
+            symbol="TEST",
+            reaction_window=ReactionWindow.SAME_SESSION,
+            rule_version=C8_RULE_VERSION,
+        ),
+        story_id=None,
+        event_id="target-event",
+        event_at=AS_OF,
+        target=MarketTargetSnapshot(
+            symbol="TEST",
+            name="Test <script>secret()</script> Market",
+            asset_class=AssetClass.EQUITY_INDEX,
+            region="US",
+            session_kind=SessionKind.EXCHANGE,
+            timezone="America/New_York",
+            close_time=datetime.strptime("16:00", "%H:%M").time(),
+            bar_date_basis=BarDateBasis.UTC_PROVIDER_TIMESTAMP_DATE,
+            reaction_profile=ReactionProfile.EQUITY_INDEX,
+        ),
+        reaction_window=ReactionWindow.SAME_SESSION,
+        measurement=ReactionMeasurement(
+            market_observation_id="market-observation",
+            provider="test",
+            raw_reference_at=AS_OF - timedelta(hours=2),
+            raw_observed_at=AS_OF,
+            reference_at=AS_OF - timedelta(hours=1),
+            observed_at=AS_OF + timedelta(hours=1),
+            currency="USD",
+            reference_value=100.0,
+            observed_value=100.0 + move,
+            absolute_move=move,
+            percentage_move=move,
+        ),
+        direction=direction,
+        magnitude=magnitude,
+        epistemic_status=EpistemicStatus.ASSOCIATED,
+        association_confidence=confidence,
+        transmission_basis=TransmissionBasisSnapshot(
+            target_kind=ImpactTargetKind.DIRECT_TARGET_REACTION,
+            source_channel=TransmissionChannel.DIRECT_ENTITY,
+            source_reason_codes=(RelationshipReason.DIRECT_ENTITY_MATCH,),
+            source_rule_version=RELATIONSHIP_RULE_VERSION,
+        ),
+        reason_codes=tuple(sorted(reasons, key=lambda item: item.value)),
+        event_evidence_ids=(),
+        rule_version=C8_RULE_VERSION,
+        evaluated_at=AS_OF + timedelta(hours=2),
+    )
+
+
 def test_report_without_structured_explanation_keeps_deterministic_path() -> None:
     html = HtmlReportRenderer().render(_context())
 
@@ -166,3 +269,37 @@ def test_report_does_not_render_prompt_or_reasoning_content() -> None:
 
     assert "INPUT_JSON" not in html
     assert "reasoning_content" not in html
+
+
+def test_report_renders_observed_reaction_without_causal_upgrade_or_internal_json() -> None:
+    context = _context()
+    context["market_impacts"] = {"target-event": [_impact()]}
+
+    html = HtmlReportRenderer().render(context)
+
+    assert "Market reaction" in html
+    assert "-1.20%" in html
+    assert "Magnitude MODERATE" in html
+    assert "Association MEDIUM" in html
+    assert "does not establish causality" in html
+    assert "caused by" not in html.casefold()
+    assert "source_reason_codes" not in html
+    assert "&lt;script&gt;secret()&lt;/script&gt;" in html
+    assert "<script>secret()</script>" not in html
+
+
+def test_report_distinguishes_no_reaction_low_confidence_and_competing_events() -> None:
+    context = _context()
+    context["market_impacts"] = {
+        "target-event": [
+            _impact(move=0.01),
+            _impact(confidence=AssociationConfidence.LOW, ambiguous=True),
+        ]
+    }
+
+    html = HtmlReportRenderer().render(context)
+
+    assert "limited / no meaningful immediate reaction" in html
+    assert "evidence is insufficient to attribute it to this Story" in html
+    assert "Multiple plausible Events share this target and window" in html
+    assert "no single cause is assigned" in html

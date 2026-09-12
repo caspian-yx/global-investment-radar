@@ -35,6 +35,7 @@ from radar.explanation import (
     unique_by_id,
     validate_driver_candidate_bundle,
 )
+from radar.impact import build_c8_market_target_events, evaluate_market_impacts
 from radar.importance import (
     C7_RULE_VERSION,
     load_view_profiles,
@@ -341,6 +342,24 @@ def _run_started_pipeline(
         relationship_summary["rejected_by_reason"],
         relationship_summary["allowed_by_channel"],
     )
+    c8_target_events = build_c8_market_target_events(markets, started_at)
+    c8_relationships = build_event_target_relationships(
+        target_events=c8_target_events,
+        candidate_events=candidate_events,
+        documents=documents,
+        assets=universe["assets"],
+        entity_config=universe.get("entities", []),
+    )
+    c8_evaluation = evaluate_market_impacts(
+        candidate_events=candidate_events,
+        market_events=c8_target_events,
+        markets=markets,
+        relationships=c8_relationships,
+        stories=story_consolidation.stories,
+        assets=universe["assets"],
+        evaluated_at=started_at,
+    )
+    logger.info("C8 market reaction diagnostics=%s", c8_evaluation.diagnostics.model_dump())
     allowed_event_ids_by_target: dict[str, set[str]] = {
         target.id: set() for target in market_events
     }
@@ -492,6 +511,7 @@ def _run_started_pipeline(
     store.save_driver_candidates(run_id, driver_candidates)
     store.save_markets(run_id, markets)
     store.save_c7_scores(run_id, c7_scores)
+    store.save_market_impacts(run_id, c8_evaluation.records)
 
     expected_market_count = sum(
         batch.diagnostics.get("market_items_expected", 0) for batch in batches
@@ -542,6 +562,12 @@ def _run_started_pipeline(
         macro=macro,
         events=ranked_events[:10],
         c7_scores={item.event_id: item for item in selected_c7_scores},
+        market_impacts={
+            event.id: [
+                item for item in c8_evaluation.records if item.event_id == event.id
+            ]
+            for event in ranked_events[:10]
+        },
         active_view=selected_view.name,
         claims=claim_map,
         evidence=evidence_map,
@@ -567,6 +593,7 @@ def _run_started_pipeline(
             "market_events": len(market_events),
             "macro_events": len(macro_events),
             "driver_candidates": len(driver_candidates),
+            "market_impacts": len(c8_evaluation.records),
             "markets": len(markets),
             "macro": len(macro),
         },
@@ -653,6 +680,7 @@ def _run_started_pipeline(
             "rule_version": C7_RULE_VERSION,
             "diagnostics": c7_diagnostics,
         },
+        "c8": c8_evaluation.diagnostics.model_dump(mode="json"),
     }
     logger.info(
         "Pipeline completed run_id=%s report_path=%s email_status=%s elapsed_seconds=%.3f",

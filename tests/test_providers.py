@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -901,6 +902,49 @@ def test_yahoo_complete_collection_is_ok_despite_experimental_warning(monkeypatc
         "Market prices use an experimental zero-key feed with no project-controlled SLA."
     ]
     assert batch.diagnostics["market_items_collected"] == 1
+
+
+def test_yahoo_retains_both_daily_bar_timestamps_without_an_extra_request() -> None:
+    previous_ts = int(datetime(2026, 9, 10, 13, 30, tzinfo=UTC).timestamp())
+    latest_ts = int(datetime(2026, 9, 11, 13, 30, tzinfo=UTC).timestamp())
+    request = httpx.Request("GET", "https://query1.finance.yahoo.com")
+    response = httpx.Response(
+        200,
+        request=request,
+        json={
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": [previous_ts, latest_ts],
+                        "indicators": {"quote": [{"close": [100.0, 101.0]}]},
+                        "meta": {"currency": "USD"},
+                    }
+                ]
+            }
+        },
+    )
+    client = Mock()
+    client.get.return_value = response
+    provider = YahooChartProvider([])
+
+    observation = provider._fetch(
+        client,
+        {"symbol": "^GSPC", "name": "S&P 500", "region": "US"},
+        datetime(2026, 9, 11, 22, tzinfo=UTC),
+    )
+
+    assert observation.previous_observed_at == datetime(2026, 9, 10, 13, 30, tzinfo=UTC)
+    assert observation.observed_at == datetime(2026, 9, 11, 13, 30, tzinfo=UTC)
+    client.get.assert_called_once()
+
+
+def test_live_assets_define_c8_daily_interval_semantics() -> None:
+    universe = load_universe(Settings(_env_file=None))
+    assets = {item["symbol"]: item for item in universe["assets"]}
+
+    assert all(item.get("reaction_close_time", item.get("close_time")) for item in assets.values())
+    assert assets["^VIX"]["reaction_profile"] == "VOLATILITY_INDEX"
+    assert assets["BTC-USD"]["reaction_close_time"] == "23:59"
 
 
 def test_bls_successful_response_without_rows_is_no_data(monkeypatch) -> None:

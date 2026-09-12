@@ -507,6 +507,7 @@ class MarketObservation(BaseModel):
     symbol: str
     name: str
     region: str
+    previous_observed_at: datetime | None = None
     observed_at: datetime
     close: float
     previous_close: float
@@ -514,6 +515,24 @@ class MarketObservation(BaseModel):
     currency: str | None = None
     provider: str
     is_demo: bool = False
+
+    @field_validator("previous_observed_at", "observed_at")
+    @classmethod
+    def normalize_market_time(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("market observation timestamps must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_market_interval(self) -> MarketObservation:
+        if (
+            self.previous_observed_at is not None
+            and self.previous_observed_at >= self.observed_at
+        ):
+            raise ValueError("previous market observation must precede latest observation")
+        return self
 
 
 class MacroObservation(BaseModel):

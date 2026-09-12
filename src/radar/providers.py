@@ -188,6 +188,7 @@ class DemoProvider:
 
     def collect(self, now: datetime) -> CollectionBatch:
         observed = now.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+        previous_observed = observed - timedelta(days=1)
         market_specs = [
             ("^GSPC", "S&P 500", "US", 6500.0, 6467.7, "USD"),
             ("^NDX", "Nasdaq 100", "US", 24010.0, 23724.0, "USD"),
@@ -204,6 +205,7 @@ class DemoProvider:
                 symbol=symbol,
                 name=name,
                 region=region,
+                previous_observed_at=previous_observed,
                 observed_at=observed,
                 close=close,
                 previous_close=previous,
@@ -400,7 +402,7 @@ class YahooChartProvider:
         if len(valid) < 2:
             raise ValueError("fewer than two valid closes")
         (previous_ts, previous), (latest_ts, latest) = valid[-2:]
-        _ = previous_ts
+        previous_observed_at = datetime.fromtimestamp(previous_ts, tz=UTC)
         observed_at = datetime.fromtimestamp(latest_ts, tz=UTC)
         currency = result.get("meta", {}).get("currency")
         return MarketObservation(
@@ -408,6 +410,7 @@ class YahooChartProvider:
             symbol=asset["symbol"],
             name=asset["name"],
             region=asset["region"],
+            previous_observed_at=previous_observed_at,
             observed_at=observed_at,
             close=float(latest),
             previous_close=float(previous),

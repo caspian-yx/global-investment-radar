@@ -23,6 +23,7 @@ from radar.explanation import build_macro_backdrop
 from radar.providers import make_document
 from radar.storage import (
     C7_IMPORTANCE_RELEVANCE_MIGRATION,
+    C8_MARKET_REACTIONS_MIGRATION,
     DRIVER_CANDIDATE_MIGRATION,
     STORY_CONSOLIDATION_MIGRATION,
     RadarStore,
@@ -383,6 +384,7 @@ def test_exact_c1_database_upgrades_additively_to_driver_schema(tmp_path) -> Non
         DRIVER_CANDIDATE_MIGRATION,
         STORY_CONSOLIDATION_MIGRATION,
         C7_IMPORTANCE_RELEVANCE_MIGRATION,
+        C8_MARKET_REACTIONS_MIGRATION,
     }
 
 

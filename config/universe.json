@@ -4,7 +4,7 @@
     {"symbol": "^NDX", "name": "Nasdaq 100", "region": "US", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "America/New_York", "close_time": "16:00", "topics": ["RATES", "INFLATION", "TECHNOLOGY", "US"]},
     {"symbol": "^DJI", "name": "Dow Jones", "region": "US", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "America/New_York", "close_time": "16:00", "topics": ["RATES", "INFLATION", "EMPLOYMENT", "ENERGY", "US"]},
     {"symbol": "^RUT", "name": "Russell 2000", "region": "US", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "America/New_York", "close_time": "16:00", "topics": ["RATES", "EMPLOYMENT", "US"]},
-    {"symbol": "^VIX", "name": "VIX", "region": "US", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "America/New_York", "close_time": "16:00", "topics": ["RATES", "REGULATION", "US"]},
+    {"symbol": "^VIX", "name": "VIX", "region": "US", "asset_class": "EQUITY_INDEX", "reaction_profile": "VOLATILITY_INDEX", "session_kind": "EXCHANGE", "timezone": "America/New_York", "close_time": "16:00", "topics": ["RATES", "REGULATION", "US"]},
     {"symbol": "^HSI", "name": "Hang Seng", "region": "HK", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Hong_Kong", "close_time": "16:00", "topics": ["CHINA", "TECHNOLOGY", "REGULATION"]},
     {"symbol": "3033.HK", "name": "Hang Seng TECH ETF proxy", "region": "HK", "asset_class": "EQUITY_ETF_PROXY", "session_kind": "EXCHANGE", "timezone": "Asia/Hong_Kong", "close_time": "16:00", "topics": ["CHINA", "TECHNOLOGY", "REGULATION"]},
     {"symbol": "000001.SS", "name": "SSE Composite", "region": "CN", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Shanghai", "close_time": "15:00", "topics": ["CHINA", "RATES", "REGULATION"]},
@@ -12,11 +12,11 @@
     {"symbol": "^N225", "name": "Nikkei 225", "region": "JP", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Tokyo", "close_time": "15:30", "topics": ["RATES", "TECHNOLOGY"]},
     {"symbol": "^KS11", "name": "KOSPI", "region": "KR", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Seoul", "close_time": "15:30", "topics": ["RATES", "TECHNOLOGY"]},
     {"symbol": "^STOXX50E", "name": "EURO STOXX 50", "region": "EU", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Europe/Berlin", "close_time": "17:30", "topics": ["RATES", "INFLATION", "ENERGY", "TECHNOLOGY"]},
-    {"symbol": "EURUSD=X", "name": "EUR/USD", "region": "FX", "asset_class": "FX", "session_kind": "NEAR_24_HOUR", "timezone": "UTC", "topics": ["RATES", "INFLATION", "US"]},
-    {"symbol": "JPY=X", "name": "USD/JPY", "region": "FX", "asset_class": "FX", "session_kind": "NEAR_24_HOUR", "timezone": "UTC", "topics": ["RATES", "US"]},
-    {"symbol": "GC=F", "name": "Gold Futures", "region": "Commodity", "asset_class": "COMMODITY", "session_kind": "NEAR_24_HOUR", "timezone": "UTC", "topics": ["RATES", "INFLATION", "US"]},
-    {"symbol": "CL=F", "name": "WTI Crude Futures", "region": "Commodity", "asset_class": "COMMODITY", "session_kind": "NEAR_24_HOUR", "timezone": "UTC", "topics": ["ENERGY", "CHINA", "US"]},
-    {"symbol": "BTC-USD", "name": "Bitcoin", "region": "Crypto", "asset_class": "CRYPTO", "session_kind": "CONTINUOUS", "timezone": "UTC", "topics": ["REGULATION", "TECHNOLOGY", "US"]}
+    {"symbol": "EURUSD=X", "name": "EUR/USD", "region": "FX", "asset_class": "FX", "session_kind": "NEAR_24_HOUR", "timezone": "UTC", "reaction_timezone": "America/New_York", "reaction_close_time": "17:00", "topics": ["RATES", "INFLATION", "US"]},
+    {"symbol": "JPY=X", "name": "USD/JPY", "region": "FX", "asset_class": "FX", "session_kind": "NEAR_24_HOUR", "timezone": "UTC", "reaction_timezone": "America/New_York", "reaction_close_time": "17:00", "topics": ["RATES", "US"]},
+    {"symbol": "GC=F", "name": "Gold Futures", "region": "Commodity", "asset_class": "COMMODITY", "session_kind": "NEAR_24_HOUR", "timezone": "UTC", "reaction_timezone": "America/New_York", "reaction_close_time": "13:30", "topics": ["RATES", "INFLATION", "US"]},
+    {"symbol": "CL=F", "name": "WTI Crude Futures", "region": "Commodity", "asset_class": "COMMODITY", "session_kind": "NEAR_24_HOUR", "timezone": "UTC", "reaction_timezone": "America/New_York", "reaction_close_time": "14:30", "topics": ["ENERGY", "CHINA", "US"]},
+    {"symbol": "BTC-USD", "name": "Bitcoin", "region": "Crypto", "asset_class": "CRYPTO", "session_kind": "CONTINUOUS", "timezone": "UTC", "reaction_close_time": "23:59", "topics": ["REGULATION", "TECHNOLOGY", "US"]}
   ],
   "rss_feeds": [
     {

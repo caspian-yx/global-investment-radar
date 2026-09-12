@@ -12,7 +12,8 @@ Implemented in this milestone:
   Europe, China, Korea and Japan; SEC Submissions metadata; the official BLS API;
   and an experimental Yahoo chart adapter.
 - Canonical, provider-isolated intelligence ingestion with deterministic source provenance and stable document identity.
-- Deterministic normalization, URL cleanup, near-duplicate clustering, event classification, entity mapping and explainable C7 importance/relevance ranking.
+- Deterministic normalization, URL cleanup, near-duplicate clustering, event classification,
+  entity mapping, explainable C7 ranking and bounded C8 daily market-reaction measurement.
 - Evidence-first `SourceDocument → Evidence → Claim → Event` domain model.
 - SQLite development storage and PostgreSQL-compatible SQLAlchemy schema.
 - Provider-neutral text-generation contract with DeepSeek transport and a controllable fake.
@@ -23,7 +24,8 @@ Implemented in this milestone:
 - Cloud-MVP preparation: Asia/Shanghai business date, scheduled live/no-AI execution,
   SMTP delivery, operational logs, failure-preserved artifacts, and optional PostgreSQL.
 
-Not implemented yet: SEC filing body/XBRL/exhibit extraction, licensed global market provider, earnings consensus/transcripts, C8 market impact, C9 product redesign, weekly report or dashboard.
+Not implemented yet: SEC filing body/XBRL/exhibit extraction, licensed global market provider,
+earnings consensus/transcripts, C9 product redesign, weekly report or dashboard.
 
 ## Quick start
 
@@ -143,6 +145,44 @@ priority band and rank through additive migration `004_c7_importance_relevance`;
 versions remain attributable. The report renders the selected view's deterministic priority
 bands (`MUST_READ`, `IMPORTANT`, `WATCH`, `BACKGROUND`, `IGNORE`) while canonical low-ranked
 Events remain preserved.
+
+## C8 daily market reaction and impact
+
+C8 measures the existing Yahoo adapter's latest daily close against its immediately preceding
+valid daily close. The adapter now retains both timestamps from the same response; it still makes
+one request per configured symbol and does not add an intraday or historical-data provider. C8
+requires an explicit configured daily close boundary and refuses incomplete, missing-time,
+pre-event and stale intervals. UTC provider timestamp dates identify the two daily bar labels;
+the configured reaction timezone and close time turn those labels into auditable interval bounds.
+
+Every MarketObservation receives a runtime-only C8 target Event so flat and small moves remain
+measurable. Candidate source Events are still authorized by the unchanged C6 relationship engine;
+C8 does not invent cross-region links or compare generic lexical similarity. An eligible Event
+must fall strictly after the reference close and no later than the completed observed close. Same
+local session dates classify as `SAME_SESSION`; an Event after the prior close on an earlier local
+date classifies as `NEXT_SESSION`.
+
+Raw percentage magnitude bands are versioned under `c8-daily-close-v1`:
+
+| Reaction profile | FLAT below | MODERATE from | LARGE from | EXTREME from |
+|---|---:|---:|---:|---:|
+| Equity index / ETF proxy | 0.10% | 0.75% | 1.50% | 3.00% |
+| FX | 0.05% | 0.30% | 0.75% | 1.50% |
+| Commodity | 0.10% | 0.75% | 1.50% | 3.00% |
+| Crypto | 0.25% | 1.50% | 3.00% | 6.00% |
+| Volatility index | 1.00% | 5.00% | 10.00% | 20.00% |
+
+The interval between FLAT and MODERATE is `SMALL`. Direction is objective (`UP`, `DOWN`,
+`FLAT`) and never means good/bad or bullish/bearish. Direct same-session relationships are HIGH
+association confidence; direct next-session and non-direct same-session relationships are MEDIUM;
+other authorized next-session relationships are LOW. Move magnitude cannot raise confidence.
+Multiple valid Events sharing one target/window are all retained and capped at LOW. C8 v1 never
+emits `CAUSALLY_SUPPORTED` and report language explicitly avoids causal attribution.
+
+Migration `005_c8_market_reactions` persists the canonical Event/Story, target snapshot, raw and
+interpreted interval timestamps, prices, move, classifications, C6 basis, reason/evidence closure,
+evaluation run and rule version. Exact identities may refresh idempotently; different runs,
+targets, windows and rule versions coexist.
 
 ## AI configuration
 
