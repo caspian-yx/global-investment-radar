@@ -11,6 +11,14 @@ on:
         options:
           - live
           - demo
+      run_mode:
+        description: AI execution mode
+        required: true
+        default: no-ai
+        type: choice
+        options:
+          - no-ai
+          - ai
   schedule:
     # 22:17 UTC = 06:17 Asia/Shanghai on the following calendar day.
     # The non-zero minute reduces peak-hour delay risk; GitHub schedules are best effort.
@@ -30,6 +38,7 @@ jobs:
     env:
       APP_ENV: production
       DATA_MODE: ${{ inputs.data_mode || 'live' }}
+      RUN_MODE: ${{ inputs.run_mode || 'ai' }}
       BUSINESS_TIMEZONE: Asia/Shanghai
       LOOKBACK_HOURS: "48"
       AI_ENABLED: "true"
@@ -54,11 +63,13 @@ jobs:
         run: uv sync --extra postgres --locked
       - name: Show safe effective configuration
         env:
+          AI_ENABLED: ${{ inputs.run_mode == 'no-ai' && 'false' || 'true' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
         run: uv run radar doctor
       - name: Run live AI radar and deliver email
         shell: bash
         env:
+          AI_ENABLED: ${{ inputs.run_mode == 'no-ai' && 'false' || 'true' }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -71,9 +82,15 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p outputs
-          uv run radar daily --ai \
-            2> >(tee outputs/run-diagnostics.log >&2) \
-            | tee outputs/run-result.json
+          if [[ "$RUN_MODE" == "no-ai" ]]; then
+            uv run radar daily \
+              2> >(tee outputs/run-diagnostics.log >&2) \
+              | tee outputs/run-result.json
+          else
+            uv run radar daily --ai \
+              2> >(tee outputs/run-diagnostics.log >&2) \
+              | tee outputs/run-result.json
+          fi
       - name: Upload report and run result
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
