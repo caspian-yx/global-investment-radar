@@ -413,6 +413,12 @@ def test_approved_feed_fixtures_preserve_provenance_and_publication_time(
     assert document.provider_native_id is None
     assert document.provider_metadata["feed_url"] == registered_feed["url"]
     if fixture_name == "nbs_china_releases.xml":
+        assert document.title == "Consumer Prices in August 2026"
+        assert document.canonical_url == (
+            "https://www.stats.gov.cn/english/PressRelease/202609/"
+            "t20260910_000001.html"
+        )
+        assert document.content == "The consumer price index increased year on year."
         assert document.provider_metadata["publication_timezone_inferred"] == registered_feed[
             "publication_timezone"
         ]
@@ -476,6 +482,22 @@ def test_rss_parser_canonicalizes_duplicates_before_accepting_items() -> None:
     assert [document.title for document in result.documents] == ["Duplicate"]
     assert result.documents[0].canonical_url == "https://example.test/release?id=7"
     assert result.diagnostics["duplicate_items"] == 1
+
+
+def test_rss_meta_normalization_does_not_modify_cdata() -> None:
+    provider = OfficialRSSProvider([], lookback_hours=48)
+    raw = (
+        '<rss><channel><meta name="feed" content="metadata">'
+        '<item><title>Item</title><link>https://example.test/item</link>'
+        '<pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>'
+        '<description><![CDATA[<meta name="content"/>Body]]></description>'
+        '</item></channel></rss>'
+    )
+
+    normalized = provider._normalize_xml_empty_meta(raw)
+
+    assert '<meta name="feed" content="metadata"/>' in normalized
+    assert '<![CDATA[<meta name="content"/>Body]]>' in normalized
 
 
 @pytest.mark.parametrize(

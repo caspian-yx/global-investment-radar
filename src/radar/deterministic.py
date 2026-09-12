@@ -40,7 +40,21 @@ EVENT_RULES: list[tuple[EventType, tuple[str, ...]]] = [
     (EventType.M_AND_A, ("acquire", "acquisition", "merger", "takeover")),
     (
         EventType.POLICY,
-        ("rate", "rates", "fomc", "central bank", "policy", "regulation", "regulations"),
+        (
+            "interest rate",
+            "policy rate",
+            "benchmark rate",
+            "rate hike",
+            "rate cut",
+            "rates unchanged",
+            "rate decision",
+            "monetary policy",
+            "central bank",
+            "fomc",
+            "policy",
+            "regulation",
+            "regulations",
+        ),
     ),
     (
         EventType.MACRO,

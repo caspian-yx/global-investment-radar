@@ -2,6 +2,10 @@
 <rss version="2.0">
   <channel>
     <title>National Bureau of Statistics of China</title>
+    <meta name="ColumnName" content="Latest Releases">
+    <meta name="ColumnType" content="Latest Releases">
+    <meta name="ColumnDescription" content="Latest Releases">
+    <meta name="ColumnKeywords" content="NBS, China">
     <item>
       <title>Consumer Prices in August 2026</title>
       <link>https://www.stats.gov.cn/english/PressRelease/202609/t20260910_000001.html</link>

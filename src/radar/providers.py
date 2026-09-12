@@ -46,6 +46,10 @@ RSS_DIAGNOSTIC_KEYS = (
     "content_truncated",
     "items_limited",
 )
+XML_PROTECTED_CONTENT_RE = re.compile(r"(<!\[CDATA\[.*?\]\]>|<!--.*?-->)", re.DOTALL)
+XML_UNCLOSED_META_RE = re.compile(
+    r"<meta\b(?P<attributes>[^<>]*?)(?P<self_closing>/?)>", re.IGNORECASE
+)
 SENSITIVE_URL_QUERY_FRAGMENTS = frozenset(
     {
         "accesstoken",
@@ -572,7 +576,7 @@ class OfficialRSSProvider:
         lookback: timedelta,
     ) -> RSSParseResult:
         config = self._feed_config(feed)
-        root = ET.fromstring(raw_xml.lstrip("\ufeff"))
+        root = ET.fromstring(self._normalize_xml_empty_meta(raw_xml.lstrip("\ufeff")))
         self._validate_feed_root(root)
         result = RSSParseResult()
         documents_by_url: dict[str, SourceDocument] = {}
@@ -657,6 +661,23 @@ class OfficialRSSProvider:
         result.diagnostics["items_limited"] = max(0, len(ordered) - config.max_items)
         result.documents = ordered[: config.max_items]
         return result
+
+    def _normalize_xml_empty_meta(self, raw_xml: str) -> str:
+        """Normalize only HTML-style empty meta tags outside protected XML text."""
+
+        def normalize_segment(segment: str) -> str:
+            def normalize_match(match: re.Match[str]) -> str:
+                if match.group("self_closing"):
+                    return match.group(0)
+                return f"<meta{match.group('attributes')}/>"
+
+            return XML_UNCLOSED_META_RE.sub(normalize_match, segment)
+
+        parts = XML_PROTECTED_CONTENT_RE.split(raw_xml)
+        return "".join(
+            part if XML_PROTECTED_CONTENT_RE.fullmatch(part) else normalize_segment(part)
+            for part in parts
+        )
 
     def _published_at(
         self,

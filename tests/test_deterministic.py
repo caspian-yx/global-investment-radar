@@ -8,12 +8,14 @@ from radar.deterministic import (
     assess_report_quality,
     build_deterministic_summary,
     canonicalize_url,
+    classify_event,
     cluster_documents,
     extract_events,
     title_similarity,
 )
 from radar.domain import (
     ClaimType,
+    EventType,
     MacroObservation,
     ProviderRunStatus,
     ProviderStatus,
@@ -24,6 +26,31 @@ from radar.domain import (
     SourceTier,
 )
 from radar.providers import make_document
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Heart rate sensing improved in the new wearable.",
+        "Data rate increased across the network.",
+        "Growth rate slowed in the latest quarter.",
+        "Tax rate changes affect corporate planning.",
+    ],
+)
+def test_bare_rate_context_does_not_classify_as_policy(text: str) -> None:
+    assert classify_event(text) is not EventType.POLICY
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The central bank announced an interest rate decision.",
+        "The committee released its monetary policy statement.",
+        "The central bank delivered a rate hike.",
+    ],
+)
+def test_strong_policy_phrases_still_classify_as_policy(text: str) -> None:
+    assert classify_event(text) is EventType.POLICY
 
 
 def test_canonicalize_url_removes_tracking() -> None:
