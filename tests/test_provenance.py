@@ -24,6 +24,7 @@ from radar.providers import make_document
 from radar.storage import (
     C7_IMPORTANCE_RELEVANCE_MIGRATION,
     C8_MARKET_REACTIONS_MIGRATION,
+    C9_2_AUDIENCE_DELIVERY_MIGRATION,
     C9_DAILY_BRIEFINGS_MIGRATION,
     C9_LOCALIZATIONS_MIGRATION,
     DRIVER_CANDIDATE_MIGRATION,
@@ -389,6 +390,7 @@ def test_exact_c1_database_upgrades_additively_to_driver_schema(tmp_path) -> Non
         C8_MARKET_REACTIONS_MIGRATION,
         C9_DAILY_BRIEFINGS_MIGRATION,
         C9_LOCALIZATIONS_MIGRATION,
+        C9_2_AUDIENCE_DELIVERY_MIGRATION,
     }
 
 

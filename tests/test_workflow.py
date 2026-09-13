@@ -89,6 +89,20 @@ def test_manual_localization_is_explicit_and_schedule_stays_disabled() -> None:
     assert "AI_ENABLED: ${{ inputs.run_mode == 'no-ai' && 'false' || 'true' }}" in workflow
 
 
+def test_audience_delivery_requires_explicit_manual_target_and_never_starts_admin() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "delivery_target:" in workflow
+    assert "default: single" in workflow
+    assert "- audience" in workflow
+    assert "radar daily --audience" in workflow
+    assert "AUDIENCE_ENABLED" in workflow
+    assert "DATABASE_URL: ${{ secrets.DATABASE_URL" in workflow
+    assert "radar admin" not in workflow
+    assert "EMAIL_TO" in workflow
+    assert "recipient@example" not in workflow
+
+
 def test_localization_cannot_silently_run_in_no_ai_mode(tmp_path) -> None:
     bash = shutil.which("bash")
     assert bash is not None

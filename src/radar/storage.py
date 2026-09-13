@@ -23,7 +23,13 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
 
+from radar.audience import (
+    DeliveryRecord,
+    EditorialNote,
+    RecipientProfile,
+)
 from radar.briefing import DailyIntelligenceBrief
 from radar.config import PROJECT_ROOT
 from radar.deterministic import build_macro_event
@@ -57,6 +63,7 @@ C7_IMPORTANCE_RELEVANCE_MIGRATION = "004_c7_importance_relevance"
 C8_MARKET_REACTIONS_MIGRATION = "005_c8_market_reactions"
 C9_DAILY_BRIEFINGS_MIGRATION = "006_c9_daily_briefings"
 C9_LOCALIZATIONS_MIGRATION = "007_c9_localizations"
+C9_2_AUDIENCE_DELIVERY_MIGRATION = "008_c9_2_audience_delivery"
 
 runs = Table(
     "runs",
@@ -288,6 +295,74 @@ Index(
     unique=True,
 )
 
+recipient_profiles_table = Table(
+    "recipient_profiles",
+    metadata,
+    Column("id", String(80), primary_key=True),
+    Column("display_name", String(120), nullable=False),
+    Column("email", String(320), nullable=False),
+    Column("normalized_email", String(320), nullable=False),
+    Column("enabled", Boolean, nullable=False),
+    Column("archived", Boolean, nullable=False),
+    Column("delivery_mode", String(16), nullable=False),
+    Column("locale", String(16), nullable=False),
+    Column("personal_note", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ux_recipient_profiles_normalized_email",
+    recipient_profiles_table.c.normalized_email,
+    unique=True,
+)
+
+editorial_notes_table = Table(
+    "editorial_notes",
+    metadata,
+    Column("id", String(80), primary_key=True),
+    Column("briefing_id", String(36), nullable=False),
+    Column("run_id", String(36), nullable=False, index=True),
+    Column("message", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index("ux_editorial_notes_briefing", editorial_notes_table.c.briefing_id, unique=True)
+
+delivery_records_table = Table(
+    "delivery_records",
+    metadata,
+    Column("id", String(80), primary_key=True),
+    Column("run_id", String(36), nullable=False, index=True),
+    Column("briefing_id", String(36), nullable=False, index=True),
+    Column("recipient_id", String(80), nullable=False, index=True),
+    Column("recipient_email", String(320), nullable=False),
+    Column("delivery_kind", String(16), nullable=False),
+    Column("requested_delivery_mode", String(16), nullable=False),
+    Column("requested_locale", String(16), nullable=False),
+    Column("rendered_locale", String(16), nullable=False),
+    Column("subject", Text, nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("attempted_at", DateTime(timezone=True)),
+    Column("accepted_at", DateTime(timezone=True)),
+    Column("error_type", String(80)),
+    Column("localization_snapshot_id", String(80)),
+    Column("html_hash", String(64)),
+    Column("fallback_reason", String(120)),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ux_delivery_records_identity",
+    delivery_records_table.c.run_id,
+    delivery_records_table.c.briefing_id,
+    delivery_records_table.c.recipient_id,
+    delivery_records_table.c.delivery_kind,
+    delivery_records_table.c.requested_delivery_mode,
+    delivery_records_table.c.requested_locale,
+    unique=True,
+)
+
 market_table = Table(
     "market_observations",
     metadata,
@@ -345,6 +420,171 @@ class RadarStore:
         self._migrate_c7_to_c8()
         self._migrate_c8_to_c9()
         self._migrate_c9_to_c91()
+        self._migrate_c91_to_c92()
+
+    def _migrate_c91_to_c92(self) -> None:
+        """Apply and validate additive C9.2 audience and delivery persistence."""
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(80) PRIMARY KEY,
+                    applied_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+            self._validate_c92_schema(connection)
+            applied = connection.execute(
+                text("SELECT version FROM schema_migrations WHERE version = :version"),
+                {"version": C9_2_AUDIENCE_DELIVERY_MIGRATION},
+            ).first()
+            if applied is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO schema_migrations (version, applied_at) "
+                        "VALUES (:version, :applied_at)"
+                    ),
+                    {
+                        "version": C9_2_AUDIENCE_DELIVERY_MIGRATION,
+                        "applied_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+
+    def _validate_c92_schema(self, connection: Connection) -> None:
+        inspector = inspect(connection)
+        required = {
+            "recipient_profiles": {
+                "id",
+                "display_name",
+                "email",
+                "normalized_email",
+                "enabled",
+                "archived",
+                "delivery_mode",
+                "locale",
+                "personal_note",
+                "created_at",
+                "updated_at",
+                "payload_json",
+            },
+            "editorial_notes": {
+                "id",
+                "briefing_id",
+                "run_id",
+                "message",
+                "created_at",
+                "updated_at",
+                "payload_json",
+            },
+            "delivery_records": {
+                "id",
+                "run_id",
+                "briefing_id",
+                "recipient_id",
+                "recipient_email",
+                "delivery_kind",
+                "requested_delivery_mode",
+                "requested_locale",
+                "rendered_locale",
+                "subject",
+                "status",
+                "attempted_at",
+                "accepted_at",
+                "error_type",
+                "localization_snapshot_id",
+                "html_hash",
+                "fallback_reason",
+                "payload_json",
+            },
+        }
+        for table_name, required_columns in required.items():
+            columns = {column["name"]: column for column in inspector.get_columns(table_name)}
+            if not required_columns <= set(columns):
+                missing = ", ".join(sorted(required_columns - set(columns)))
+                raise RuntimeError(f"C9.2 migration is incomplete: {table_name} missing {missing}")
+            primary_key = inspector.get_pk_constraint(table_name)["constrained_columns"]
+            if primary_key != ["id"]:
+                raise RuntimeError(
+                    f"C9.2 migration is incomplete: invalid {table_name} primary key"
+                )
+
+        nullable_profiles = {"personal_note"}
+        profile_columns = {
+            column["name"]: column for column in inspector.get_columns("recipient_profiles")
+        }
+        if any(
+            profile_columns[name]["nullable"]
+            for name in required["recipient_profiles"] - nullable_profiles
+        ):
+            raise RuntimeError("C9.2 migration is incomplete: nullable recipient column")
+        delivery_nullable = {
+            "attempted_at",
+            "accepted_at",
+            "error_type",
+            "localization_snapshot_id",
+            "html_hash",
+            "fallback_reason",
+        }
+        delivery_columns = {
+            column["name"]: column for column in inspector.get_columns("delivery_records")
+        }
+        if any(
+            delivery_columns[name]["nullable"]
+            for name in required["delivery_records"] - delivery_nullable
+        ):
+            raise RuntimeError("C9.2 migration is incomplete: nullable delivery column")
+
+        profile_indexes = inspector.get_indexes("recipient_profiles")
+        if not any(
+            index["column_names"] == ["normalized_email"] and index["unique"]
+            for index in profile_indexes
+        ):
+            raise RuntimeError("C9.2 migration is incomplete: recipient identity index missing")
+        editorial_indexes = inspector.get_indexes("editorial_notes")
+        if not any(
+            index["column_names"] == ["briefing_id"] and index["unique"]
+            for index in editorial_indexes
+        ):
+            raise RuntimeError("C9.2 migration is incomplete: editorial identity index missing")
+        delivery_indexes = inspector.get_indexes("delivery_records")
+        if not any(
+            index["column_names"]
+            == [
+                "run_id",
+                "briefing_id",
+                "recipient_id",
+                "delivery_kind",
+                "requested_delivery_mode",
+                "requested_locale",
+            ]
+            and index["unique"]
+            for index in delivery_indexes
+        ):
+            raise RuntimeError("C9.2 migration is incomplete: delivery identity index missing")
+
+        invalid_recipients = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM recipient_profiles "
+                "WHERE id IS NULL OR TRIM(id) = '' "
+                "OR display_name IS NULL OR TRIM(display_name) = '' "
+                "OR email IS NULL OR TRIM(email) = '' "
+                "OR normalized_email IS NULL OR TRIM(normalized_email) = '' "
+                "OR delivery_mode NOT IN ('english', 'chinese', 'bilingual') "
+                "OR locale NOT IN ('en', 'zh-CN') "
+                "OR (archived = 1 AND enabled = 1)"
+            )
+        ).scalar_one()
+        invalid_deliveries = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM delivery_records "
+                "WHERE id IS NULL OR TRIM(id) = '' "
+                "OR status NOT IN ('PENDING', 'SENT', 'FAILED', 'SKIPPED') "
+                "OR delivery_kind NOT IN ('production', 'test') "
+                "OR requested_delivery_mode NOT IN ('english', 'chinese', 'bilingual')"
+            )
+        ).scalar_one()
+        if invalid_recipients or invalid_deliveries:
+            raise RuntimeError("C9.2 migration is incomplete: invalid persisted rows")
 
     def _migrate_c8_to_c9(self) -> None:
         """Apply and validate additive C9 briefing persistence."""
@@ -1454,6 +1694,191 @@ class RadarStore:
         ):
             raise RuntimeError("persisted C9.1 localization identity is inconsistent")
         return item
+
+    def save_recipient(self, item: RecipientProfile) -> None:
+        payload = item.model_dump_json()
+        values = {
+            "id": item.id,
+            "display_name": item.display_name,
+            "email": item.email,
+            "normalized_email": item.normalized_email,
+            "enabled": item.enabled,
+            "archived": item.archived,
+            "delivery_mode": item.delivery_mode.value,
+            "locale": item.locale,
+            "personal_note": item.personal_note,
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+            "payload_json": payload,
+        }
+        with self.engine.begin() as connection:
+            conflicting = connection.execute(
+                select(recipient_profiles_table.c.id).where(
+                    recipient_profiles_table.c.normalized_email == item.normalized_email,
+                    recipient_profiles_table.c.id != item.id,
+                )
+            ).first()
+            if conflicting is not None:
+                raise ValueError("recipient email already exists")
+            self._upsert_connection(connection, recipient_profiles_table, item.id, values)
+
+    def load_recipient(self, recipient_id: str) -> RecipientProfile | None:
+        with self.engine.connect() as connection:
+            payload = connection.execute(
+                select(recipient_profiles_table.c.payload_json).where(
+                    recipient_profiles_table.c.id == recipient_id
+                )
+            ).scalar_one_or_none()
+        return RecipientProfile.model_validate_json(payload) if payload is not None else None
+
+    def list_recipients(self, *, include_archived: bool = False) -> tuple[RecipientProfile, ...]:
+        statement = select(recipient_profiles_table.c.payload_json).order_by(
+            recipient_profiles_table.c.id
+        )
+        if not include_archived:
+            statement = statement.where(recipient_profiles_table.c.archived.is_(False))
+        with self.engine.connect() as connection:
+            payloads = connection.execute(statement).scalars()
+            return tuple(RecipientProfile.model_validate_json(payload) for payload in payloads)
+
+    def save_editorial_note(self, item: EditorialNote) -> None:
+        payload = item.model_dump_json()
+        values = {
+            "id": item.id,
+            "briefing_id": item.briefing_id,
+            "run_id": item.run_id,
+            "message": item.message,
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+            "payload_json": payload,
+        }
+        with self.engine.begin() as connection:
+            conflicting = connection.execute(
+                select(editorial_notes_table.c.id).where(
+                    editorial_notes_table.c.briefing_id == item.briefing_id,
+                    editorial_notes_table.c.id != item.id,
+                )
+            ).first()
+            if conflicting is not None:
+                raise ValueError("editorial note identity is not deterministic")
+            self._upsert_connection(connection, editorial_notes_table, item.id, values)
+
+    def load_editorial_note(self, briefing_id: str) -> EditorialNote | None:
+        with self.engine.connect() as connection:
+            payload = connection.execute(
+                select(editorial_notes_table.c.payload_json).where(
+                    editorial_notes_table.c.briefing_id == briefing_id
+                )
+            ).scalar_one_or_none()
+        return EditorialNote.model_validate_json(payload) if payload is not None else None
+
+    def delete_editorial_note(self, briefing_id: str) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(
+                editorial_notes_table.delete().where(
+                    editorial_notes_table.c.briefing_id == briefing_id
+                )
+            )
+
+    def save_delivery_record(self, item: DeliveryRecord) -> None:
+        payload = item.model_dump_json()
+        values = {
+            "id": item.id,
+            "run_id": item.run_id,
+            "briefing_id": item.briefing_id,
+            "recipient_id": item.recipient_id,
+            "recipient_email": item.recipient_email,
+            "delivery_kind": item.delivery_kind.value,
+            "requested_delivery_mode": item.requested_delivery_mode.value,
+            "requested_locale": item.requested_locale,
+            "rendered_locale": item.rendered_locale,
+            "subject": item.subject,
+            "status": item.status.value,
+            "attempted_at": item.attempted_at,
+            "accepted_at": item.accepted_at,
+            "error_type": item.error_type,
+            "localization_snapshot_id": item.localization_snapshot_id,
+            "html_hash": item.html_hash,
+            "fallback_reason": item.fallback_reason,
+            "payload_json": payload,
+        }
+        identity_columns = (
+            "run_id",
+            "briefing_id",
+            "recipient_id",
+            "delivery_kind",
+            "requested_delivery_mode",
+            "requested_locale",
+        )
+        with self.engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(
+                        *[getattr(delivery_records_table.c, name) for name in identity_columns]
+                    ).where(delivery_records_table.c.id == item.id)
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None and any(
+                existing[name] != values[name] for name in identity_columns
+            ):
+                raise ValueError("delivery record identity is immutable")
+            self._upsert_connection(connection, delivery_records_table, item.id, values)
+
+    def reserve_delivery(self, item: DeliveryRecord) -> bool:
+        values = {
+            "id": item.id,
+            "run_id": item.run_id,
+            "briefing_id": item.briefing_id,
+            "recipient_id": item.recipient_id,
+            "recipient_email": item.recipient_email,
+            "delivery_kind": item.delivery_kind.value,
+            "requested_delivery_mode": item.requested_delivery_mode.value,
+            "requested_locale": item.requested_locale,
+            "rendered_locale": item.rendered_locale,
+            "subject": item.subject,
+            "status": item.status.value,
+            "attempted_at": item.attempted_at,
+            "accepted_at": item.accepted_at,
+            "error_type": item.error_type,
+            "localization_snapshot_id": item.localization_snapshot_id,
+            "html_hash": item.html_hash,
+            "fallback_reason": item.fallback_reason,
+            "payload_json": item.model_dump_json(),
+        }
+        try:
+            with self.engine.begin() as connection:
+                existing = connection.execute(
+                    select(delivery_records_table.c.id).where(
+                        delivery_records_table.c.id == item.id
+                    )
+                ).first()
+                if existing is not None:
+                    return False
+                connection.execute(delivery_records_table.insert().values(**values))
+        except IntegrityError:
+            # A concurrent reservation can win between the read and insert.
+            return False
+        return True
+
+    def load_delivery(self, delivery_id: str) -> DeliveryRecord | None:
+        with self.engine.connect() as connection:
+            payload = connection.execute(
+                select(delivery_records_table.c.payload_json).where(
+                    delivery_records_table.c.id == delivery_id
+                )
+            ).scalar_one_or_none()
+        return DeliveryRecord.model_validate_json(payload) if payload is not None else None
+
+    def list_delivery_records(self, run_id: str) -> tuple[DeliveryRecord, ...]:
+        with self.engine.connect() as connection:
+            payloads = connection.execute(
+                select(delivery_records_table.c.payload_json)
+                .where(delivery_records_table.c.run_id == run_id)
+                .order_by(delivery_records_table.c.id)
+            ).scalars()
+            return tuple(DeliveryRecord.model_validate_json(payload) for payload in payloads)
 
     def load_stories(self, rule_version: str) -> list[Story]:
         with self.engine.connect() as connection:

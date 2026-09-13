@@ -40,6 +40,26 @@ uv run radar daily --data-mode demo --no-ai
 
 The generated report is written to `outputs/reports/`. Demo records are synthetic and the report displays a prominent `DEMO DATA` banner.
 
+## Private-beta audience delivery (C9.2)
+
+Audience management is operator-only. Run `uv run radar admin` locally with
+`AUDIENCE_ADMIN_TOKEN` configured; the server binds only to `127.0.0.1`.
+The CLI and admin use the same service layer (`radar recipients ...`,
+`radar editorial ...`, `radar preview`, and `radar send-test`). Preview never
+sends mail, and test delivery targets only `OPERATOR_EMAIL`.
+
+Production fan-out requires both `AUDIENCE_ENABLED=true` and the explicit
+`uv run radar daily --audience` entrypoint. It also requires SMTP configuration
+and a shared durable PostgreSQL `DATABASE_URL`; SQLite is suitable for local
+development/tests only. The GitHub Actions workflow keeps `single` as its
+default delivery target and never starts the admin server.
+
+Recipient configuration, personal/editorial notes, and delivery records live
+in the shared database and are not stored in Git. Production delivery is
+at-most-once: a previously reserved `PENDING`, `SENT`, `FAILED`, or `SKIPPED`
+identity is not automatically sent again. Removing a recipient archives it so
+historical delivery records remain auditable.
+
 To validate the optional structured AI path without an API call:
 
 ```bash

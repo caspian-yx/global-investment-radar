@@ -40,13 +40,33 @@ The workflow uses STARTTLS. A normal Google account password must not be used. A
 
 Alternative: Resend SMTP has a free tier, but production sending requires a domain that you control and verify. Configure `smtp.resend.com`, port `587`, username `resend`, and use a Resend API key as `SMTP_PASSWORD`. This is only zero-cost if you already own a domain.
 
-## 3. Optional durable history
+## 3. Durable audience and delivery state
 
-No database secret is required for the first cloud run. Without `DATABASE_URL`, the workflow uses SQLite on the temporary GitHub runner. The HTML artifact and email survive, but the SQLite history does not.
+The C9.2 audience source of truth must be a private PostgreSQL database shared
+by the local operator and GitHub Actions. Local SQLite is for development and
+tests only; production audience mode fails closed when `DATABASE_URL` is
+SQLite. The runner does not import or reconstruct a local database file.
 
-For durable history, create a Neon Free PostgreSQL project and add the optional GitHub Actions secret `DATABASE_URL`, containing the Neon pooled connection string with TLS enabled.
+Create a Neon Free PostgreSQL project (or equivalent private PostgreSQL
+service) and add the GitHub Actions secret `DATABASE_URL`, containing the
+pooled connection string with TLS enabled. Configure the same value in the
+operator's untracked local `.env`.
 
-Change the scheme copied from Neon from `postgresql://` to `postgresql+psycopg://` if needed by SQLAlchemy. Keep the rest of the generated connection string unchanged. The workflow installs the locked `psycopg` driver, and the application creates its current tables on first connection. This milestone intentionally does not add a migration service or database backup system.
+Change the scheme copied from Neon from `postgresql://` to
+`postgresql+psycopg://` if needed by SQLAlchemy. Keep the rest of the generated
+connection string unchanged. The workflow installs the locked `psycopg` driver;
+both the local admin and runner apply additive migration 008 idempotently.
+Also configure `AUDIENCE_ENABLED` only through the deployment environment,
+`AUDIENCE_ADMIN_TOKEN` locally, and the SMTP secrets. Configure `OPERATOR_EMAIL`
+separately when using the local operator-only **Send Test To Me** path; it is
+not required for production audience fan-out itself.
+Recipient addresses, notes, tokens and credentials must not be committed or
+placed in workflow YAML.
+
+Audience delivery requires both `AUDIENCE_ENABLED=true` and the explicit
+manual/workflow `delivery_target=audience` path. The default/schedule continues
+to use `EMAIL_TO`. Delivery reservation is at-most-once; an existing PENDING
+state is treated as an unknown outcome and is not automatically retried.
 
 ## 4. First cloud run
 

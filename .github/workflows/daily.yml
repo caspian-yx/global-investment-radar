@@ -27,6 +27,14 @@ on:
         options:
           - off
           - zh-CN
+      delivery_target:
+        description: Delivery target; audience requires the durable shared database
+        required: true
+        default: single
+        type: choice
+        options:
+          - single
+          - audience
   schedule:
     # 22:17 UTC = 06:17 Asia/Shanghai on the following calendar day.
     # The non-zero minute reduces peak-hour delay risk; GitHub schedules are best effort.
@@ -58,6 +66,8 @@ jobs:
       LOCALIZATION_LOCALE: zh-CN
       LOCALIZATION_MODEL: "deepseek-v4-flash"
       LOCALIZATION_TIMEOUT_SECONDS: "90"
+      DELIVERY_TARGET: ${{ inputs.delivery_target || 'single' }}
+      AUDIENCE_ENABLED: ${{ inputs.delivery_target == 'audience' && 'true' || 'false' }}
       EMAIL_MODE: smtp
       REPORT_OUTPUT_DIR: outputs/reports
     steps:
@@ -88,6 +98,7 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          OPERATOR_EMAIL: ${{ secrets.OPERATOR_EMAIL }}
           SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
@@ -97,8 +108,22 @@ jobs:
             echo "Chinese localization requires run_mode=ai" >&2
             exit 2
           fi
+          if [[ "$DELIVERY_TARGET" == "audience" && "$DATABASE_URL" == sqlite:* ]]; then
+            echo "Audience delivery requires shared durable PostgreSQL DATABASE_URL" >&2
+            exit 2
+          fi
           mkdir -p outputs
-          if [[ "$RUN_MODE" == "no-ai" ]]; then
+          if [[ "$DELIVERY_TARGET" == "audience" ]]; then
+            if [[ "$RUN_MODE" == "no-ai" ]]; then
+              uv run radar daily --audience \
+                2> >(tee outputs/run-diagnostics.log >&2) \
+                | tee outputs/run-result.json
+            else
+              uv run radar daily --ai --audience \
+                2> >(tee outputs/run-diagnostics.log >&2) \
+                | tee outputs/run-result.json
+            fi
+          elif [[ "$RUN_MODE" == "no-ai" ]]; then
             uv run radar daily \
               2> >(tee outputs/run-diagnostics.log >&2) \
               | tee outputs/run-result.json

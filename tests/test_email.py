@@ -67,3 +67,43 @@ def test_smtp_sender_uses_tls_login_and_html(monkeypatch) -> None:
 def test_smtp_sender_rejects_missing_credentials() -> None:
     with pytest.raises(ValueError, match="Missing SMTP configuration"):
         SMTPEmailSender(Settings(email_mode="smtp"))
+
+
+def test_smtp_sender_send_to_creates_one_independent_recipient_message(monkeypatch) -> None:
+    calls: list[EmailMessage] = []
+
+    class FakeSMTP:
+        def __init__(self, host: str, port: int, timeout: int) -> None:
+            _ = host, port, timeout
+
+        def __enter__(self) -> FakeSMTP:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def starttls(self, *, context: ssl.SSLContext) -> None:
+            _ = context
+
+        def login(self, username: str, password: str) -> None:
+            _ = username, password
+
+        def send_message(self, message: EmailMessage) -> None:
+            calls.append(message)
+
+    monkeypatch.setattr("radar.email.smtplib.SMTP", FakeSMTP)
+    settings = Settings(
+        email_mode="smtp",
+        email_from="radar@example.com",
+        smtp_host="smtp.example.com",
+        smtp_username="smtp-user",
+        smtp_password="test-only-password",
+    )
+    SMTPEmailSender(settings).send_to(
+        recipient="alice@example.com", subject="Daily", html="<b>Only Alice</b>"
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["To"] == "alice@example.com"
+    assert calls[0].get_all("Cc") is None
+    assert calls[0].get_all("Bcc") is None

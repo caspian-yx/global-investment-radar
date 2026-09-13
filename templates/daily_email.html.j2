@@ -1,19 +1,19 @@
 <!doctype html>
-<html lang="{% if localized %}zh-CN{% else %}en{% endif %}">
+<html lang="{% if localized_primary %}zh-CN{% else %}en{% endif %}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% if localized %}全球投资雷达{% else %}Global Investment Radar{% endif %} — {{ briefing.report_date }}</title>
+  <title>{% if localized_primary %}全球投资雷达{% else %}Global Investment Radar{% endif %} — {{ briefing.report_date }}</title>
 </head>
 <body style="margin:0;background:#F7F8FA;color:#14243A;font-family:Aptos,'Segoe UI',Arial,sans-serif;">
-  <div style="display:none;max-height:0;overflow:hidden;color:transparent;">{% if localized %}全球投资晨报 · {{ briefing.report_date }}{% else %}A focused global intelligence brief for {{ briefing.report_date }}.{% endif %}</div>
+  <div style="display:none;max-height:0;overflow:hidden;color:transparent;">{% if localized_primary %}全球投资晨报 · {{ briefing.report_date }}{% else %}A focused global intelligence brief for {{ briefing.report_date }}.{% endif %}</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:#F7F8FA;border-collapse:collapse;">
     <tr>
       <td align="center" style="padding:20px 10px 32px;">
         <table lang="en" role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:680px;background:#FFFFFF;border-collapse:collapse;">
           <tr>
-            <td{% if localized %} lang="zh-CN"{% endif %} style="padding:28px 26px 22px;border-top:5px solid #285A8E;">
-              {% if localized %}
+            <td{% if localized_primary %} lang="zh-CN"{% endif %} style="padding:28px 26px 22px;border-top:5px solid #285A8E;">
+              {% if localized_primary %}
               <div style="font-size:11px;line-height:1.3;letter-spacing:1.5px;color:#285A8E;font-weight:700;">{{ localization_labels.localized_briefing }} · {{ briefing.view_name }}</div>
               <h1 style="margin:9px 0 5px;font-size:27px;line-height:1.14;font-weight:700;color:#14243A;">全球投资雷达</h1>
               <div style="font-size:14px;line-height:1.5;color:#5E6C7B;">{{ briefing.report_date }} · 基于已验证证据</div>
@@ -42,7 +42,7 @@
           <tr><td style="padding:12px 26px;background:#FFF6DF;color:#785A18;font-size:12px;line-height:1.55;border-top:1px solid #EAD9A7;"><strong>DEGRADED DATA</strong> · Read conclusions with additional caution.</td></tr>
           {% endif %}
 
-          {% if localized %}
+          {% if localized_primary %}
           <tr><td lang="zh-CN" style="padding:16px 26px 8px;">
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#14243A;">
               <tr><td style="padding:20px 22px;color:#FFFFFF;">
@@ -117,9 +117,16 @@
             {% endfor %}
           {% else %}<tr><td lang="zh-CN" style="padding:8px 26px 20px;font-size:13px;line-height:1.55;color:#74808D;">{{ localization_labels.no_market }}</td></tr>{% endif %}
 
+          {% if include_english_reference %}
           <tr><td lang="en" style="padding:18px 26px 10px;border-top:3px solid #D9E0E7;color:#74808D;font-size:12px;line-height:1.5;">Global Investment Radar · {{ localization_labels.english_reference }}</td></tr>
           {% endif %}
+          {% endif %}
 
+          {% if note_text %}
+          <tr><td style="padding:14px 26px;background:#F2F5F8;border-top:1px solid #D9E0E7;border-bottom:1px solid #D9E0E7;font-size:13px;line-height:1.6;color:#33465A;white-space:pre-line;"><strong>Editor's Note / 今日附言</strong><br>{{ note_text }}</td></tr>
+          {% endif %}
+
+          {% if render_english_body %}
           <tr>
             <td style="padding:16px 26px 8px;">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#14243A;">
@@ -215,7 +222,8 @@
           </td></tr>
         </table>
       </td>
-    </tr>
+          </tr>
+          {% endif %}
   </table>
 </body>
 </html>

@@ -15,6 +15,10 @@ class EmailSender(Protocol):
     def send(self, *, subject: str, html: str) -> str: ...
 
 
+class RecipientEmailSender(Protocol):
+    def send_to(self, *, recipient: str, subject: str, html: str) -> str: ...
+
+
 class DisabledEmailSender:
     name = "disabled"
 
@@ -48,7 +52,6 @@ class SMTPEmailSender:
     def __init__(self, settings: Settings) -> None:
         required = {
             "EMAIL_FROM": settings.email_from,
-            "EMAIL_TO": settings.email_to,
             "SMTP_HOST": settings.smtp_host,
             "SMTP_USERNAME": settings.smtp_username,
             "SMTP_PASSWORD": settings.smtp_password,
@@ -59,10 +62,24 @@ class SMTPEmailSender:
         self.settings = settings
 
     def send(self, *, subject: str, html: str) -> str:
+        if not self.settings.email_to:
+            raise ValueError("Missing SMTP configuration: EMAIL_TO")
+        return self._send_message(
+            recipient=self.settings.email_to,
+            subject=subject,
+            html=html,
+        )
+
+    def send_to(self, *, recipient: str, subject: str, html: str) -> str:
+        if not recipient.strip():
+            raise ValueError("recipient must not be blank")
+        return self._send_message(recipient=recipient, subject=subject, html=html)
+
+    def _send_message(self, *, recipient: str, subject: str, html: str) -> str:
         message = EmailMessage()
         message["Subject"] = subject
         message["From"] = self.settings.email_from
-        message["To"] = self.settings.email_to
+        message["To"] = recipient
         message.set_content("Open this message in an HTML-capable email client.")
         message.add_alternative(html, subtype="html")
         with smtplib.SMTP(

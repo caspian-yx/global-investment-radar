@@ -4,11 +4,12 @@ import logging
 import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from radar.briefing import compose_daily_brief, select_daily_stories
 from radar.config import Settings, load_universe
+from radar.delivery import AudienceService
 from radar.deterministic import (
     assess_report_quality,
     extract_market_events,
@@ -24,7 +25,7 @@ from radar.domain import (
     StructuredAnalysis,
     stable_id,
 )
-from radar.email import build_email_sender
+from radar.email import RecipientEmailSender, build_email_sender
 from radar.enrichment import run_structured_explanation_enrichment
 from radar.explanation import (
     build_cross_asset_context,
@@ -111,7 +112,9 @@ def _resolve_ai_status(
     return "failed"
 
 
-def run_daily(settings: Settings, now: datetime | None = None) -> PipelineResult:
+def run_daily(
+    settings: Settings, now: datetime | None = None, *, audience: bool = False
+) -> PipelineResult:
     timer_started = time.perf_counter()
     started_at = (now or datetime.now(UTC)).astimezone(UTC)
     business_now = started_at.astimezone(ZoneInfo(settings.business_timezone))
@@ -153,6 +156,7 @@ def run_daily(settings: Settings, now: datetime | None = None) -> PipelineResult
             llm=llm,
             store=store,
             timer_started=timer_started,
+            audience=audience,
         )
     except Exception as exc:
         elapsed_seconds = round(time.perf_counter() - timer_started, 3)
@@ -192,6 +196,7 @@ def _run_started_pipeline(
     llm: AnalysisProvider,
     store: RadarStore,
     timer_started: float,
+    audience: bool,
 ) -> PipelineResult:
     batches = collect_intelligence_providers(
         build_providers(settings, universe),
@@ -563,6 +568,7 @@ def _run_started_pipeline(
     logger.info("C9 daily briefing diagnostics=%s", briefing.diagnostics.model_dump())
 
     localized_content = None
+    localization_snapshot = None
     localization_model = settings.localization_model or settings.llm_model
     localization_diagnostics = LocalizationDiagnostics(
         enabled=False,
@@ -673,20 +679,53 @@ def _run_started_pipeline(
     )
     if quality.status is ReportQualityStatus.INSUFFICIENT:
         subject = f"INSUFFICIENT DATA — {subject}"
-    logger.info("Email delivery started mode=%s", settings.email_mode)
-    try:
-        email_sender = build_email_sender(settings)
-        email_status = email_sender.send(subject=subject, html=html)
-    except Exception as exc:
-        elapsed_seconds = round(time.perf_counter() - timer_started, 3)
-        logger.error(
-            "Email delivery failed error_type=%s report_preserved=%s elapsed_seconds=%.3f",
-            type(exc).__name__,
-            report_path,
-            elapsed_seconds,
+    audience_details: dict[str, object] = {
+        "requested": audience,
+        "enabled": settings.audience_enabled,
+    }
+    if audience:
+        logger.info("Audience delivery started")
+        audience_service = AudienceService(store, settings)
+        audience_service.preflight(briefing, explicit_audience=True)
+        audience_sender = cast(RecipientEmailSender, build_email_sender(settings))
+        delivery_summary = audience_service.deliver_briefing_to_audience(
+            briefing,
+            localized_content,
+            audience_sender,
+            localization_snapshot_id=(
+                localization_snapshot.id if localization_snapshot is not None else None
+            ),
         )
-        raise RuntimeError(f"Email delivery failed ({type(exc).__name__}).") from None
-    logger.info("Email delivery finished status=%s", email_status)
+        email_status = (
+            "audience: "
+            f"{delivery_summary.sent_count} sent, "
+            f"{delivery_summary.failed_count} failed, "
+            f"{delivery_summary.skipped_count} skipped"
+        )
+        audience_details.update(
+            {
+                "attempted_count": delivery_summary.attempted_count,
+                "sent_count": delivery_summary.sent_count,
+                "failed_count": delivery_summary.failed_count,
+                "skipped_count": delivery_summary.skipped_count,
+            }
+        )
+        logger.info("Audience delivery finished status=%s", email_status)
+    else:
+        logger.info("Email delivery started mode=%s", settings.email_mode)
+        try:
+            legacy_sender = build_email_sender(settings)
+            email_status = legacy_sender.send(subject=subject, html=html)
+        except Exception as exc:
+            elapsed_seconds = round(time.perf_counter() - timer_started, 3)
+            logger.error(
+                "Email delivery failed error_type=%s report_preserved=%s elapsed_seconds=%.3f",
+                type(exc).__name__,
+                report_path,
+                elapsed_seconds,
+            )
+            raise RuntimeError(f"Email delivery failed ({type(exc).__name__}).") from None
+        logger.info("Email delivery finished status=%s", email_status)
 
     if quality.status is ReportQualityStatus.INSUFFICIENT:
         raise RuntimeError("Insufficient data quality gate rejected the daily report.")
@@ -733,6 +772,7 @@ def _run_started_pipeline(
         "c8": c8_evaluation.diagnostics.model_dump(mode="json"),
         "c9": briefing.diagnostics.model_dump(mode="json"),
         "c91": localization_diagnostics.model_dump(mode="json"),
+        "c92": audience_details,
     }
     logger.info(
         "Pipeline completed run_id=%s report_path=%s email_status=%s elapsed_seconds=%.3f",

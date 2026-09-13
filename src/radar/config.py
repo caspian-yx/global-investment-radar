@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from radar.audience import validate_email
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -92,6 +94,18 @@ class Settings(BaseSettings):
     )
     email_from: str | None = Field(default=None, validation_alias="EMAIL_FROM")
     email_to: str | None = Field(default=None, validation_alias="EMAIL_TO")
+    audience_enabled: bool = Field(default=False, validation_alias="AUDIENCE_ENABLED")
+    max_active_recipients: int = Field(
+        default=20,
+        validation_alias="MAX_ACTIVE_RECIPIENTS",
+        ge=1,
+        le=100,
+    )
+    operator_email: str | None = Field(default=None, validation_alias="OPERATOR_EMAIL")
+    audience_admin_token: SecretStr | None = Field(
+        default=None, validation_alias="AUDIENCE_ADMIN_TOKEN"
+    )
+    admin_port: int = Field(default=8765, validation_alias="ADMIN_PORT", ge=1024, le=65535)
     smtp_host: str | None = Field(default=None, validation_alias="SMTP_HOST")
     smtp_port: int = Field(default=587, validation_alias="SMTP_PORT")
     smtp_username: str | None = Field(default=None, validation_alias="SMTP_USERNAME")
@@ -104,6 +118,8 @@ class Settings(BaseSettings):
         "llm_model",
         "llm_base_url",
         "llm_api_key",
+        "operator_email",
+        "audience_admin_token",
         mode="before",
     )
     @classmethod
@@ -118,6 +134,11 @@ class Settings(BaseSettings):
         except ZoneInfoNotFoundError as exc:
             raise ValueError(f"Unknown IANA timezone: {value}") from exc
         return value
+
+    @field_validator("operator_email")
+    @classmethod
+    def valid_operator_email(cls, value: str | None) -> str | None:
+        return validate_email(value) if value is not None else None
 
     def resolve_path(self, path: Path) -> Path:
         return path if path.is_absolute() else PROJECT_ROOT / path
