@@ -19,6 +19,14 @@ on:
         options:
           - no-ai
           - ai
+      localization_mode:
+        description: Chinese briefing localization (requires run_mode ai)
+        required: true
+        default: off
+        type: choice
+        options:
+          - off
+          - zh-CN
   schedule:
     # 22:17 UTC = 06:17 Asia/Shanghai on the following calendar day.
     # The non-zero minute reduces peak-hour delay risk; GitHub schedules are best effort.
@@ -46,6 +54,9 @@ jobs:
       AI_MAX_REQUESTS_PER_RUN: "10"
       LLM_PROVIDER: deepseek
       LLM_MODEL: "deepseek-v4-flash"
+      LOCALIZATION_ENABLED: ${{ inputs.localization_mode == 'zh-CN' && 'true' || 'false' }}
+      LOCALIZATION_LOCALE: zh-CN
+      LOCALIZATION_MODEL: "deepseek-v4-flash"
       EMAIL_MODE: smtp
       REPORT_OUTPUT_DIR: outputs/reports
     steps:
@@ -81,6 +92,10 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
         run: |
           set -o pipefail
+          if [[ "$LOCALIZATION_ENABLED" == "true" && "$RUN_MODE" != "ai" ]]; then
+            echo "Chinese localization requires run_mode=ai" >&2
+            exit 2
+          fi
           mkdir -p outputs
           if [[ "$RUN_MODE" == "no-ai" ]]; then
             uv run radar daily \

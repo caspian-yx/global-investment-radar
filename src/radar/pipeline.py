@@ -46,6 +46,13 @@ from radar.importance import (
 )
 from radar.ingestion import collect_intelligence_providers, deduplicate_source_documents
 from radar.llm import AnalysisProvider, LLMError, build_generation_provider, build_llm_provider
+from radar.localization import (
+    C91_RULE_VERSION,
+    LocalizationDiagnostics,
+    build_localization_snapshot,
+    localize_briefing,
+    validate_localization_snapshot,
+)
 from radar.macro import build_macro_source_document
 from radar.providers import build_providers
 from radar.relevance import (
@@ -555,6 +562,78 @@ def _run_started_pipeline(
         )
     logger.info("C9 daily briefing diagnostics=%s", briefing.diagnostics.model_dump())
 
+    localized_content = None
+    localization_model = settings.localization_model or settings.llm_model
+    localization_diagnostics = LocalizationDiagnostics(
+        enabled=False,
+        locale=settings.localization_locale,
+        requested_model=localization_model,
+        status="disabled",
+        request_count=0,
+        input_tokens=0,
+        output_tokens=0,
+        total_tokens=0,
+        latency_seconds=0,
+        snapshot_reused=False,
+    )
+    if settings.effective_localization_enabled and localization_model:
+        localization_snapshot = store.load_localization_snapshot(
+            briefing.id,
+            settings.localization_locale,
+            C91_RULE_VERSION,
+            localization_model,
+        )
+        if localization_snapshot is not None:
+            validate_localization_snapshot(localization_snapshot, briefing)
+            localized_content = localization_snapshot.content
+            localization_diagnostics = LocalizationDiagnostics(
+                enabled=True,
+                locale=localization_snapshot.locale,
+                requested_model=localization_snapshot.requested_model,
+                returned_model=localization_snapshot.returned_model,
+                provider=localization_snapshot.provider,
+                status="reused",
+                request_count=0,
+                input_tokens=localization_snapshot.usage.input_tokens or 0,
+                output_tokens=localization_snapshot.usage.output_tokens or 0,
+                total_tokens=localization_snapshot.usage.total_tokens or 0,
+                latency_seconds=localization_snapshot.latency_seconds,
+                snapshot_reused=True,
+            )
+        else:
+            localization_provider = generation_provider
+            if localization_provider is None or localization_model != settings.llm_model:
+                try:
+                    localization_provider = build_generation_provider(
+                        settings.model_copy(update={"llm_model": localization_model})
+                    )
+                except LLMError as exc:
+                    logger.warning(
+                        "C9.1 localization provider unavailable error_type=%s",
+                        type(exc).__name__,
+                    )
+                    localization_provider = None
+            localization_result = localize_briefing(
+                briefing,
+                localization_provider,
+                enabled=True,
+                requested_model=localization_model,
+                max_output_tokens=settings.ai_max_output_tokens_per_run,
+            )
+            localization_diagnostics = localization_result.diagnostics
+            if localization_result.content is not None:
+                localization_snapshot = build_localization_snapshot(
+                    briefing,
+                    localization_result,
+                    created_at=started_at,
+                )
+                store.save_localization_snapshot(localization_snapshot)
+                localized_content = localization_snapshot.content
+    logger.info(
+        "C9.1 localization diagnostics=%s",
+        localization_diagnostics.model_dump(mode="json"),
+    )
+
     is_demo = any(batch.is_demo for batch in batches)
     ai_test_data = any(item.is_test_data for item in analyses)
     context = report_context(
@@ -562,6 +641,7 @@ def _run_started_pipeline(
         data_mode=settings.data_mode,
         is_demo=is_demo,
         ai_test_data=ai_test_data,
+        localized=localized_content,
     )
     renderer = HtmlReportRenderer()
     html = renderer.render(context)
@@ -577,7 +657,11 @@ def _run_started_pipeline(
     )
     logger.info("Report generated path=%s html_sha256=%s", report_path, html_hash)
 
-    subject = f"Global Investment Radar — {report_date}"
+    subject = (
+        f"Global Investment Radar — {report_date} 全球投资晨报"
+        if localized_content is not None
+        else f"Global Investment Radar — {report_date}"
+    )
     if quality.status is ReportQualityStatus.INSUFFICIENT:
         subject = f"INSUFFICIENT DATA — {subject}"
     logger.info("Email delivery started mode=%s", settings.email_mode)
@@ -639,6 +723,7 @@ def _run_started_pipeline(
         },
         "c8": c8_evaluation.diagnostics.model_dump(mode="json"),
         "c9": briefing.diagnostics.model_dump(mode="json"),
+        "c91": localization_diagnostics.model_dump(mode="json"),
     }
     logger.info(
         "Pipeline completed run_id=%s report_path=%s email_status=%s elapsed_seconds=%.3f",

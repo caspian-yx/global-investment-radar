@@ -59,6 +59,15 @@ class Settings(BaseSettings):
         validation_alias="AI_MAX_OUTPUT_TOKENS_PER_RUN",
         ge=0,
     )
+    localization_enabled: bool = Field(
+        default=False, validation_alias="LOCALIZATION_ENABLED"
+    )
+    localization_locale: Literal["zh-CN"] = Field(
+        default="zh-CN", validation_alias="LOCALIZATION_LOCALE"
+    )
+    localization_model: str | None = Field(
+        default=None, validation_alias="LOCALIZATION_MODEL"
+    )
     llm_provider: str = Field(default="disabled", validation_alias="LLM_PROVIDER")
     llm_model: str | None = Field(default=None, validation_alias="LLM_MODEL")
     llm_base_url: str | None = Field(default=None, validation_alias="LLM_BASE_URL")
@@ -124,6 +133,10 @@ class Settings(BaseSettings):
             and self.ai_max_input_tokens_per_run != 0
             and self.ai_max_output_tokens_per_run != 0
         )
+
+    @property
+    def effective_localization_enabled(self) -> bool:
+        return self.localization_enabled and self.effective_ai_enabled
 
 
 def load_universe(settings: Settings) -> dict[str, Any]:

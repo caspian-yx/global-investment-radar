@@ -8,6 +8,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from radar.briefing import DailyIntelligenceBrief
 from radar.config import PROJECT_ROOT
 from radar.domain import content_hash
+from radar.localization import C91_LABELS, LocalizedBriefingContent
 
 
 class HtmlReportRenderer:
@@ -39,10 +40,17 @@ def report_context(
     is_demo: bool,
     ai_test_data: bool,
     data_mode: str,
+    localized: LocalizedBriefingContent | None = None,
 ) -> dict[str, Any]:
+    localized_market_names = {
+        item.key: item.text for item in localized.market_names
+    } if localized is not None else {}
     return {
         "briefing": briefing,
         "is_demo": is_demo,
         "ai_test_data": ai_test_data,
         "data_mode": data_mode,
+        "localized": localized,
+        "localized_market_names": localized_market_names,
+        "localization_labels": C91_LABELS,
     }

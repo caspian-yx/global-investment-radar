@@ -43,6 +43,10 @@ from radar.domain import (
 )
 from radar.impact import MarketImpactRecord
 from radar.importance import C7Score
+from radar.localization import (
+    LocalizationSnapshot,
+    serialize_localization_snapshot,
+)
 from radar.ranking import rank_driver_candidates
 
 metadata = MetaData()
@@ -52,6 +56,7 @@ STORY_CONSOLIDATION_MIGRATION = "003_c6_3_story_consolidation"
 C7_IMPORTANCE_RELEVANCE_MIGRATION = "004_c7_importance_relevance"
 C8_MARKET_REACTIONS_MIGRATION = "005_c8_market_reactions"
 C9_DAILY_BRIEFINGS_MIGRATION = "006_c9_daily_briefings"
+C9_LOCALIZATIONS_MIGRATION = "007_c9_localizations"
 
 runs = Table(
     "runs",
@@ -253,6 +258,36 @@ Index(
     unique=True,
 )
 
+c9_localizations_table = Table(
+    "c9_localizations",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("briefing_id", String(36), nullable=False, index=True),
+    Column("run_id", String(36), nullable=False, index=True),
+    Column("view_id", String(80), nullable=False),
+    Column("briefing_rule_version", String(40), nullable=False),
+    Column("locale", String(16), nullable=False),
+    Column("localization_rule_version", String(40), nullable=False),
+    Column("requested_model", String(160), nullable=False),
+    Column("returned_model", String(160)),
+    Column("provider", String(80), nullable=False),
+    Column("input_tokens", Integer),
+    Column("output_tokens", Integer),
+    Column("total_tokens", Integer),
+    Column("latency_seconds", Float, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("payload_hash", String(64), nullable=False),
+    Column("payload_json", Text, nullable=False),
+)
+Index(
+    "ux_c9_localizations_identity",
+    c9_localizations_table.c.briefing_id,
+    c9_localizations_table.c.locale,
+    c9_localizations_table.c.localization_rule_version,
+    c9_localizations_table.c.requested_model,
+    unique=True,
+)
+
 market_table = Table(
     "market_observations",
     metadata,
@@ -309,6 +344,7 @@ class RadarStore:
         self._migrate_c6_3_to_c7()
         self._migrate_c7_to_c8()
         self._migrate_c8_to_c9()
+        self._migrate_c9_to_c91()
 
     def _migrate_c8_to_c9(self) -> None:
         """Apply and validate additive C9 briefing persistence."""
@@ -388,6 +424,95 @@ class RadarStore:
         ).scalar_one()
         if invalid_rows:
             raise RuntimeError("C9 migration is incomplete: invalid persisted rows")
+
+    def _migrate_c9_to_c91(self) -> None:
+        """Apply and validate additive C9.1 localization persistence."""
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(80) PRIMARY KEY,
+                    applied_at VARCHAR(40) NOT NULL
+                )
+                """
+            )
+            self._validate_c91_schema(connection)
+            applied = connection.execute(
+                text("SELECT version FROM schema_migrations WHERE version = :version"),
+                {"version": C9_LOCALIZATIONS_MIGRATION},
+            ).first()
+            if applied is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO schema_migrations (version, applied_at) "
+                        "VALUES (:version, :applied_at)"
+                    ),
+                    {
+                        "version": C9_LOCALIZATIONS_MIGRATION,
+                        "applied_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+
+    def _validate_c91_schema(self, connection: Connection) -> None:
+        inspector = inspect(connection)
+        required_columns = {
+            "id",
+            "briefing_id",
+            "run_id",
+            "view_id",
+            "briefing_rule_version",
+            "locale",
+            "localization_rule_version",
+            "requested_model",
+            "returned_model",
+            "provider",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "latency_seconds",
+            "created_at",
+            "payload_hash",
+            "payload_json",
+        }
+        columns = {column["name"]: column for column in inspector.get_columns("c9_localizations")}
+        if not required_columns <= set(columns):
+            missing = ", ".join(sorted(required_columns - set(columns)))
+            raise RuntimeError(f"C9.1 migration is incomplete: c9_localizations missing {missing}")
+        nullable_columns = {
+            "returned_model",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+        }
+        if any(columns[name]["nullable"] for name in required_columns - nullable_columns):
+            raise RuntimeError("C9.1 migration is incomplete: nullable localization column")
+        indexes = inspector.get_indexes("c9_localizations")
+        if not any(
+            index["column_names"]
+            == ["briefing_id", "locale", "localization_rule_version", "requested_model"]
+            and index["unique"]
+            for index in indexes
+        ):
+            raise RuntimeError("C9.1 migration is incomplete: identity index missing")
+        invalid_rows = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM c9_localizations "
+                "WHERE id IS NULL OR TRIM(id) = '' "
+                "OR briefing_id IS NULL OR TRIM(briefing_id) = '' "
+                "OR run_id IS NULL OR TRIM(run_id) = '' "
+                "OR view_id IS NULL OR TRIM(view_id) = '' "
+                "OR briefing_rule_version IS NULL OR TRIM(briefing_rule_version) = '' "
+                "OR locale IS NULL OR TRIM(locale) = '' "
+                "OR localization_rule_version IS NULL OR TRIM(localization_rule_version) = '' "
+                "OR requested_model IS NULL OR TRIM(requested_model) = '' "
+                "OR provider IS NULL OR TRIM(provider) = '' "
+                "OR latency_seconds < 0 "
+                "OR payload_hash IS NULL OR LENGTH(payload_hash) <> 64 "
+                "OR payload_json IS NULL OR TRIM(payload_json) = ''"
+            )
+        ).scalar_one()
+        if invalid_rows:
+            raise RuntimeError("C9.1 migration is incomplete: invalid persisted rows")
 
     def _migrate_c7_to_c8(self) -> None:
         """Apply and validate additive C8 market-impact persistence."""
@@ -1228,6 +1353,106 @@ class RadarStore:
         item = DailyIntelligenceBrief.model_validate_json(payload)
         if item.run_id != run_id or item.view_id != view_id or item.rule_version != rule_version:
             raise RuntimeError("persisted C9 briefing identity is inconsistent")
+        return item
+
+    def save_localization_snapshot(self, item: LocalizationSnapshot) -> None:
+        """Persist one immutable C9.1 localization for a briefing/model identity."""
+        payload = serialize_localization_snapshot(item)
+        values = {
+            "id": item.id,
+            "briefing_id": item.briefing_id,
+            "run_id": item.run_id,
+            "view_id": item.view_id,
+            "briefing_rule_version": item.briefing_rule_version,
+            "locale": item.locale,
+            "localization_rule_version": item.localization_rule_version,
+            "requested_model": item.requested_model,
+            "returned_model": item.returned_model,
+            "provider": item.provider,
+            "input_tokens": item.usage.input_tokens,
+            "output_tokens": item.usage.output_tokens,
+            "total_tokens": item.usage.total_tokens,
+            "latency_seconds": item.latency_seconds,
+            "created_at": item.created_at,
+            "payload_hash": item.payload_hash,
+            "payload_json": payload,
+        }
+        with self.engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(
+                        c9_localizations_table.c.id,
+                        c9_localizations_table.c.payload_hash,
+                        c9_localizations_table.c.payload_json,
+                    ).where(
+                        c9_localizations_table.c.briefing_id == item.briefing_id,
+                        c9_localizations_table.c.locale == item.locale,
+                        c9_localizations_table.c.localization_rule_version
+                        == item.localization_rule_version,
+                        c9_localizations_table.c.requested_model == item.requested_model,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                if (
+                    existing["id"] != item.id
+                    or existing["payload_hash"] != item.payload_hash
+                    or existing["payload_json"] != payload
+                ):
+                    raise ValueError(
+                        "immutable C9.1 localization conflicts with persisted identity"
+                    )
+                return
+            connection.execute(c9_localizations_table.insert().values(**values))
+
+    def load_localization_snapshot(
+        self,
+        briefing_id: str,
+        locale: str,
+        localization_rule_version: str,
+        requested_model: str,
+    ) -> LocalizationSnapshot | None:
+        with self.engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(
+                        c9_localizations_table.c.payload_hash,
+                        c9_localizations_table.c.payload_json,
+                    ).where(
+                        c9_localizations_table.c.briefing_id == briefing_id,
+                        c9_localizations_table.c.locale == locale,
+                        c9_localizations_table.c.localization_rule_version
+                        == localization_rule_version,
+                        c9_localizations_table.c.requested_model == requested_model,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        payload = str(row["payload_json"])
+        if content_hash(payload) != row["payload_hash"]:
+            raise RuntimeError("persisted C9.1 localization payload checksum is invalid")
+        try:
+            raw = json.loads(payload)
+            item = LocalizationSnapshot.model_validate_json(
+                json.dumps(
+                    {**raw, "payload_hash": str(row["payload_hash"])},
+                    ensure_ascii=False,
+                )
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("persisted C9.1 localization payload is invalid") from exc
+        if (
+            item.briefing_id != briefing_id
+            or item.locale != locale
+            or item.localization_rule_version != localization_rule_version
+            or item.requested_model != requested_model
+        ):
+            raise RuntimeError("persisted C9.1 localization identity is inconsistent")
         return item
 
     def load_stories(self, rule_version: str) -> list[Story]:

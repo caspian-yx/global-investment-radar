@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -69,3 +70,36 @@ def test_daily_workflow_script_preserves_failure_through_tee(tmp_path) -> None:
     assert (tmp_path / "outputs" / "run-diagnostics.log").read_text() == (
         "diagnostic-message"
     )
+
+
+def test_manual_localization_is_explicit_and_schedule_stays_disabled() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "localization_mode:" in workflow
+    assert "default: off" in workflow
+    assert "- zh-CN" in workflow
+    localization_switch = (
+        "LOCALIZATION_ENABLED: "
+        "${{ inputs.localization_mode == 'zh-CN' && 'true' || 'false' }}"
+    )
+    assert localization_switch in workflow
+    assert "LOCALIZATION_LOCALE: zh-CN" in workflow
+    assert 'LOCALIZATION_MODEL: "deepseek-v4-flash"' in workflow
+    assert "AI_ENABLED: ${{ inputs.run_mode == 'no-ai' && 'false' || 'true' }}" in workflow
+
+
+def test_localization_cannot_silently_run_in_no_ai_mode(tmp_path) -> None:
+    bash = shutil.which("bash")
+    assert bash is not None
+
+    completed = subprocess.run(
+        [bash, "-c", _daily_run_script()],
+        cwd=tmp_path,
+        env={**os.environ, "LOCALIZATION_ENABLED": "true", "RUN_MODE": "no-ai"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "Chinese localization requires run_mode=ai" in completed.stderr

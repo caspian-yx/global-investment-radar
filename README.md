@@ -220,6 +220,32 @@ table, inline email-safe styling and no JavaScript, external CSS or client-side 
 adapter is still daily-bar only, C8 associations are not causal claims, and the product is not
 investment advice.
 
+### C9.1 Chinese localization
+
+C9.1 is an optional presentation layer over the immutable C9 briefing. It sends at most one
+structured request with the already-selected briefing payload, validates key closure, normalized
+dates/currency amounts, numeric/percentage atoms, explicit market symbols, market direction,
+C8 uncertainty, and the absence of causal or investment-advice language, then stores only the
+validated result. It cannot select, rank, merge, explain or alter
+the canonical C9 content. No source bodies or external research are supplied to the localization
+request.
+
+Localization is disabled by default. When enabled, a matching snapshot is reused before any model
+call; the identity is `briefing_id + locale + localization_rule_version + requested_model` and an
+immutable conflict or checksum/identity failure is fail-closed. The exact requested model is used
+for identity and the exact provider-returned model is retained separately; those names may differ.
+Provider errors, malformed output and validation failures make the report fall back to the unchanged
+English briefing without a
+repair request. A successful result renders as Chinese-first content followed by the complete
+English reference, while canonical numbers, metadata, source links and C8 association wording
+remain deterministic.
+
+```dotenv
+LOCALIZATION_ENABLED=false
+LOCALIZATION_LOCALE=zh-CN
+LOCALIZATION_MODEL=
+```
+
 ## AI configuration
 
 AI is an optional enhancement layer. The default is deterministic:
