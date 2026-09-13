@@ -68,6 +68,11 @@ def doctor() -> None:
         "ai_max_output_tokens_per_run": settings.ai_max_output_tokens_per_run,
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,
+        "llm_timeout_seconds": settings.llm_timeout_seconds,
+        "localization_enabled": settings.localization_enabled,
+        "localization_locale": settings.localization_locale,
+        "localization_model": settings.localization_model,
+        "localization_timeout_seconds": settings.localization_timeout_seconds,
         "email_mode": settings.email_mode,
     }
     typer.echo(json.dumps(safe, indent=2))

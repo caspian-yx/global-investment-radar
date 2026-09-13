@@ -286,8 +286,9 @@ def test_deepseek_timeout_is_translated_without_retry() -> None:
 
     provider = _provider(httpx.MockTransport(handle))
 
-    with pytest.raises(LLMTimeoutError, match="timed out"):
+    with pytest.raises(LLMTimeoutError, match="timed out") as caught:
         provider.generate(LLMRequest(prompt="hello"))
+    assert caught.value.phase == "read"
     assert attempts == 1
 
 

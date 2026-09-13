@@ -244,7 +244,16 @@ remain deterministic.
 LOCALIZATION_ENABLED=false
 LOCALIZATION_LOCALE=zh-CN
 LOCALIZATION_MODEL=
+LOCALIZATION_TIMEOUT_SECONDS=90
 ```
+
+`LOCALIZATION_TIMEOUT_SECONDS` is a bounded, localization-only single-request timeout
+(default 90 seconds). Full-brief structured output can take longer than short explanation
+calls, while provider failure still falls back safely to the unchanged English briefing.
+An HTTP 200 response event only confirms that response headers arrived; localization succeeds
+only after the complete body, trusted provider response, structured JSON and all validators pass.
+If a timeout occurs before that point, usage is reported as unavailable rather than zero and the
+English fallback remains authoritative.
 
 ## AI configuration
 

@@ -74,7 +74,9 @@ class LLMAuthenticationError(LLMError):
 
 
 class LLMTimeoutError(LLMError):
-    pass
+    def __init__(self, message: str, *, phase: str | None = None) -> None:
+        super().__init__(message)
+        self.phase = phase
 
 
 class LLMRateLimitError(LLMError):
@@ -236,6 +238,22 @@ class DeepSeekProvider:
                     },
                     json=payload,
                 )
+        except httpx.ConnectTimeout as exc:
+            raise LLMTimeoutError(
+                "DeepSeek request timed out during connection.", phase="connect"
+            ) from exc
+        except httpx.ReadTimeout as exc:
+            raise LLMTimeoutError(
+                "DeepSeek request timed out during response read.", phase="read"
+            ) from exc
+        except httpx.WriteTimeout as exc:
+            raise LLMTimeoutError(
+                "DeepSeek request timed out during request write.", phase="write"
+            ) from exc
+        except httpx.PoolTimeout as exc:
+            raise LLMTimeoutError(
+                "DeepSeek request timed out waiting for a connection.", phase="pool"
+            ) from exc
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("DeepSeek request timed out.") from exc
         except httpx.RequestError as exc:

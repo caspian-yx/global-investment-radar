@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     localization_model: str | None = Field(
         default=None, validation_alias="LOCALIZATION_MODEL"
     )
+    localization_timeout_seconds: float = Field(
+        default=90.0,
+        validation_alias="LOCALIZATION_TIMEOUT_SECONDS",
+        gt=0,
+        le=180,
+    )
     llm_provider: str = Field(default="disabled", validation_alias="LLM_PROVIDER")
     llm_model: str | None = Field(default=None, validation_alias="LLM_MODEL")
     llm_base_url: str | None = Field(default=None, validation_alias="LLM_BASE_URL")

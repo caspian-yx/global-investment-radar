@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from test_briefing_composition import _compose
 from test_c8_storage import _record
 
-from radar.llm import FakeLLMProvider, LLMResponse
+from radar.llm import FakeLLMProvider, LLMResponse, LLMTimeoutError
 from radar.localization import (
     build_localization_payload,
     build_localization_prompt,
+    build_localization_snapshot,
     localize_briefing,
     parse_localization_response,
 )
@@ -286,6 +288,87 @@ def test_localization_success_uses_one_request_and_records_provider_metadata() -
     assert result.diagnostics.status == "success"
     assert result.diagnostics.request_count == 1
     assert result.diagnostics.returned_model == "model-returned"
+    assert len(provider.requests) == 1
+
+
+def test_localization_success_records_measured_latency_beyond_old_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    brief, _ = _compose()
+    response = LLMResponse(
+        content=json.dumps(_translated_payload(brief), ensure_ascii=False),
+        provider="fake",
+        requested_model="model-requested",
+        returned_model="model-returned",
+        latency_seconds=0.1,
+    )
+    clock_values = iter([100.0, 142.0])
+    monkeypatch.setattr("radar.localization.time.perf_counter", lambda: next(clock_values))
+
+    result = localize_briefing(
+        brief,
+        FakeLLMProvider(response=response),
+        enabled=True,
+        requested_model="model-requested",
+    )
+
+    assert result.content is not None
+    assert result.diagnostics.latency_seconds == 42.0
+
+
+def test_localization_snapshot_persists_measured_attempt_latency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    brief, _ = _compose()
+    response = LLMResponse(
+        content=json.dumps(_translated_payload(brief), ensure_ascii=False),
+        provider="fake",
+        requested_model="model-requested",
+        returned_model="model-returned",
+        latency_seconds=0.1,
+    )
+    clock_values = iter([200.0, 242.0])
+    monkeypatch.setattr("radar.localization.time.perf_counter", lambda: next(clock_values))
+    result = localize_briefing(
+        brief,
+        FakeLLMProvider(response=response),
+        enabled=True,
+        requested_model="model-requested",
+    )
+
+    snapshot = build_localization_snapshot(
+        brief,
+        result,
+        created_at=datetime(2026, 9, 13, tzinfo=UTC),
+    )
+
+    assert snapshot.latency_seconds == 42.0
+
+
+def test_localization_timeout_is_single_call_with_measured_latency_and_unknown_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    brief, _ = _compose()
+    clock_values = iter([10.0, 42.0])
+    monkeypatch.setattr("radar.localization.time.perf_counter", lambda: next(clock_values))
+    provider = FakeLLMProvider(error=LLMTimeoutError("simulated read timeout"))
+
+    result = localize_briefing(
+        brief,
+        provider,
+        enabled=True,
+        requested_model="model-requested",
+    )
+
+    assert result.content is None
+    assert result.diagnostics.status == "failed"
+    assert result.diagnostics.failure_category == "LLMTimeoutError"
+    assert result.diagnostics.failure_phase is None
+    assert result.diagnostics.request_count == 1
+    assert result.diagnostics.latency_seconds == 32.0
+    assert result.diagnostics.input_tokens is None
+    assert result.diagnostics.output_tokens is None
+    assert result.diagnostics.total_tokens is None
     assert len(provider.requests) == 1
 
 

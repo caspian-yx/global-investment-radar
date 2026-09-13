@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -12,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from radar.briefing import DailyIntelligenceBrief
 from radar.domain import content_hash, stable_id
-from radar.llm import LLMProvider, LLMRequest, LLMResponse, LLMUsage
+from radar.llm import LLMProvider, LLMRequest, LLMResponse, LLMTimeoutError
 
 C91_RULE_VERSION = "c9.1-zh-CN-v1"
 C91_LOCALE: Literal["zh-CN"] = "zh-CN"
@@ -174,12 +175,13 @@ class LocalizationDiagnostics(_StrictModel):
     provider: str | None = None
     status: str
     request_count: int = Field(ge=0, le=1)
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
     latency_seconds: float = Field(ge=0)
     snapshot_reused: bool
     failure_category: str | None = None
+    failure_phase: str | None = None
 
 
 @dataclass(frozen=True)
@@ -645,6 +647,7 @@ def localize_briefing(
             ),
         )
     payload = build_localization_payload(briefing)
+    started = time.perf_counter()
     try:
         response = provider.generate(
             LLMRequest(
@@ -653,6 +656,8 @@ def localize_briefing(
             )
         )
     except Exception as exc:
+        elapsed = max(0.0, time.perf_counter() - started)
+        failure_phase = exc.phase if isinstance(exc, LLMTimeoutError) else None
         return LocalizationResult(
             content=None,
             response=None,
@@ -663,15 +668,17 @@ def localize_briefing(
                 provider=provider.name,
                 status="failed",
                 request_count=1,
-                input_tokens=0,
-                output_tokens=0,
-                total_tokens=0,
-                latency_seconds=0,
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+                latency_seconds=elapsed,
                 snapshot_reused=False,
                 failure_category=type(exc).__name__,
+                failure_phase=failure_phase,
             ),
         )
-    usage = response.usage or LLMUsage()
+    usage = response.usage
+    elapsed = max(0.0, time.perf_counter() - started)
     if response.requested_model != requested_model:
         return LocalizationResult(
             content=None,
@@ -684,10 +691,10 @@ def localize_briefing(
                 provider=response.provider,
                 status="failed",
                 request_count=1,
-                input_tokens=usage.input_tokens or 0,
-                output_tokens=usage.output_tokens or 0,
-                total_tokens=usage.total_tokens or 0,
-                latency_seconds=response.latency_seconds,
+                input_tokens=usage.input_tokens if usage is not None else None,
+                output_tokens=usage.output_tokens if usage is not None else None,
+                total_tokens=usage.total_tokens if usage is not None else None,
+                latency_seconds=elapsed,
                 snapshot_reused=False,
                 failure_category="identity",
             ),
@@ -706,10 +713,10 @@ def localize_briefing(
                 provider=response.provider,
                 status="failed",
                 request_count=1,
-                input_tokens=usage.input_tokens or 0,
-                output_tokens=usage.output_tokens or 0,
-                total_tokens=usage.total_tokens or 0,
-                latency_seconds=response.latency_seconds,
+                input_tokens=usage.input_tokens if usage is not None else None,
+                output_tokens=usage.output_tokens if usage is not None else None,
+                total_tokens=usage.total_tokens if usage is not None else None,
+                latency_seconds=elapsed,
                 snapshot_reused=False,
                 failure_category=type(exc).__name__,
             ),
@@ -725,10 +732,10 @@ def localize_briefing(
             provider=response.provider,
             status="success",
             request_count=1,
-            input_tokens=usage.input_tokens or 0,
-            output_tokens=usage.output_tokens or 0,
-            total_tokens=usage.total_tokens or 0,
-            latency_seconds=response.latency_seconds,
+            input_tokens=usage.input_tokens if usage is not None else None,
+            output_tokens=usage.output_tokens if usage is not None else None,
+            total_tokens=usage.total_tokens if usage is not None else None,
+            latency_seconds=elapsed,
             snapshot_reused=False,
         ),
     )
@@ -745,7 +752,7 @@ def build_localization_snapshot(
     response = result.response
     if result.diagnostics.requested_model != response.requested_model:
         raise ValueError("cannot persist localization with inconsistent model identity")
-    usage = response.usage or LLMUsage()
+    usage = response.usage
     requested_model = response.requested_model
     localization_id = stable_id(
         "c9-localization",
@@ -764,11 +771,11 @@ def build_localization_snapshot(
         returned_model=response.returned_model,
         provider=response.provider,
         usage=LocalizationUsage(
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.total_tokens,
+            input_tokens=usage.input_tokens if usage is not None else None,
+            output_tokens=usage.output_tokens if usage is not None else None,
+            total_tokens=usage.total_tokens if usage is not None else None,
         ),
-        latency_seconds=response.latency_seconds,
+        latency_seconds=result.diagnostics.latency_seconds,
         created_at=created_at.astimezone(UTC),
         payload_hash="0" * 64,
         content=content,

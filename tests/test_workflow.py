@@ -85,6 +85,7 @@ def test_manual_localization_is_explicit_and_schedule_stays_disabled() -> None:
     assert localization_switch in workflow
     assert "LOCALIZATION_LOCALE: zh-CN" in workflow
     assert 'LOCALIZATION_MODEL: "deepseek-v4-flash"' in workflow
+    assert 'LOCALIZATION_TIMEOUT_SECONDS: "90"' in workflow
     assert "AI_ENABLED: ${{ inputs.run_mode == 'no-ai' && 'false' || 'true' }}" in workflow
 
 

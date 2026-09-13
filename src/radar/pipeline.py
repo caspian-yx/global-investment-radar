@@ -594,18 +594,27 @@ def _run_started_pipeline(
                 provider=localization_snapshot.provider,
                 status="reused",
                 request_count=0,
-                input_tokens=localization_snapshot.usage.input_tokens or 0,
-                output_tokens=localization_snapshot.usage.output_tokens or 0,
-                total_tokens=localization_snapshot.usage.total_tokens or 0,
+                input_tokens=localization_snapshot.usage.input_tokens,
+                output_tokens=localization_snapshot.usage.output_tokens,
+                total_tokens=localization_snapshot.usage.total_tokens,
                 latency_seconds=localization_snapshot.latency_seconds,
                 snapshot_reused=True,
             )
         else:
             localization_provider = generation_provider
-            if localization_provider is None or localization_model != settings.llm_model:
+            if (
+                localization_provider is None
+                or localization_model != settings.llm_model
+                or settings.localization_timeout_seconds != settings.llm_timeout_seconds
+            ):
                 try:
                     localization_provider = build_generation_provider(
-                        settings.model_copy(update={"llm_model": localization_model})
+                        settings.model_copy(
+                            update={
+                                "llm_model": localization_model,
+                                "llm_timeout_seconds": settings.localization_timeout_seconds,
+                            }
+                        )
                     )
                 except LLMError as exc:
                     logger.warning(

@@ -25,6 +25,14 @@ def test_localization_settings_are_explicit_and_disabled_by_default() -> None:
     assert settings.localization_enabled is False
     assert settings.localization_locale == "zh-CN"
     assert settings.localization_model is None
+    assert settings.localization_timeout_seconds == 90
+
+
+def test_localization_timeout_is_bounded_and_rejects_non_positive_values() -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, LOCALIZATION_TIMEOUT_SECONDS=0)
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, LOCALIZATION_TIMEOUT_SECONDS=181)
 
 
 def _success_result(
@@ -143,12 +151,13 @@ def test_localization_uses_explicit_model_when_analysis_model_differs(
         llm_model="analysis-model",
         localization_enabled=True,
         localization_model="deepseek-v4-flash",
+        localization_timeout_seconds=91,
         email_mode="disabled",
     )
-    observed_models: list[str | None] = []
+    observed_configs: list[tuple[str | None, float]] = []
 
     def fake_build(config):
-        observed_models.append(config.llm_model)
+        observed_configs.append((config.llm_model, config.llm_timeout_seconds))
         provider = FakeLLMProvider()
         provider.model = config.llm_model
         return provider
@@ -162,7 +171,7 @@ def test_localization_uses_explicit_model_when_analysis_model_differs(
     monkeypatch.setattr("radar.pipeline.localize_briefing", check_localization_provider)
 
     result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
-    assert "deepseek-v4-flash" in observed_models
+    assert ("deepseek-v4-flash", 91) in observed_configs
     store = RadarStore(settings.database_url)
     briefing = store.load_daily_briefing(result.run_id, "global", "c9-v1")
     assert briefing is not None

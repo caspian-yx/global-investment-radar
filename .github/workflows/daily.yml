@@ -57,6 +57,7 @@ jobs:
       LOCALIZATION_ENABLED: ${{ inputs.localization_mode == 'zh-CN' && 'true' || 'false' }}
       LOCALIZATION_LOCALE: zh-CN
       LOCALIZATION_MODEL: "deepseek-v4-flash"
+      LOCALIZATION_TIMEOUT_SECONDS: "90"
       EMAIL_MODE: smtp
       REPORT_OUTPUT_DIR: outputs/reports
     steps:
