@@ -78,6 +78,69 @@ def test_payload_has_stable_keys_and_prompt_contains_only_bounded_context() -> N
     assert "article body" not in prompt.casefold()
 
 
+def test_localization_prompt_declares_exact_output_field_closure() -> None:
+    brief, _ = _compose()
+    prompt = build_localization_prompt(build_localization_payload(brief))
+
+    assert "primary_stories items may contain only key, headline, why_it_matters" in prompt
+    assert "Do not copy event_type, region, or entity_ids" in prompt
+    assert "No analysis, notes, or extra keys" in prompt
+
+
+def test_localization_request_explicitly_disables_reasoning() -> None:
+    brief, _ = _compose()
+    provider = FakeLLMProvider(
+        response=LLMResponse(
+            content=json.dumps(_translated_payload(brief), ensure_ascii=False),
+            provider="fake",
+            requested_model="model-requested",
+            latency_seconds=0,
+        )
+    )
+
+    result = localize_briefing(
+        brief,
+        provider,
+        enabled=True,
+        requested_model="model-requested",
+    )
+
+    assert result.content is not None
+    assert provider.requests[0].reasoning is False
+
+
+def test_schema_failure_reports_safe_phase_and_canonical_key() -> None:
+    brief, _ = _compose()
+    data = _translated_payload(brief)
+    data["primary_stories"][0].update(
+        {"event_type": "POLICY", "region": "US", "entity_ids": []}
+    )
+    provider = FakeLLMProvider(
+        response=LLMResponse(
+            content=json.dumps(data, ensure_ascii=False),
+            provider="fake",
+            requested_model="model-requested",
+            returned_model="model-returned",
+            latency_seconds=0,
+        )
+    )
+
+    result = localize_briefing(
+        brief,
+        provider,
+        enabled=True,
+        requested_model="model-requested",
+    )
+
+    assert result.content is None
+    assert result.diagnostics.failure_category == "ValidationError"
+    assert result.diagnostics.failure_phase == "schema"
+    assert result.diagnostics.failure_key == data["primary_stories"][0]["key"]
+    assert result.diagnostics.failure_summary == (
+        "extra_forbidden at primary_stories.0.event_type"
+    )
+
+
 def test_strict_response_accepts_exact_key_closure_and_order() -> None:
     brief, _ = _compose()
     payload = build_localization_payload(brief)

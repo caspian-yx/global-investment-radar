@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from radar.briefing import DailyIntelligenceBrief
 from radar.domain import content_hash, stable_id
@@ -182,6 +182,27 @@ class LocalizationDiagnostics(_StrictModel):
     snapshot_reused: bool
     failure_category: str | None = None
     failure_phase: str | None = None
+    failure_key: str | None = None
+    failure_summary: str | None = None
+
+
+class LocalizationValidationError(ValueError):
+    """Safe, structured context for a rejected provider localization."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str,
+        failure_key: str | None = None,
+        failure_summary: str | None = None,
+        exception_type: str = "ValueError",
+    ) -> None:
+        super().__init__(message)
+        self.phase = phase
+        self.failure_key = failure_key
+        self.failure_summary = failure_summary or message
+        self.exception_type = exception_type
 
 
 @dataclass(frozen=True)
@@ -306,6 +327,12 @@ def build_localization_prompt(payload: LocalizationPayload) -> str:
         "in the supplied order. Preserve exact factual values: June 2026 may become "
         "2026年6月, and $16 million may become 1600万美元. Do not change years, dates, "
         "currency, amount, percentages, symbols, market direction, or uncertainty.\n"
+        "Output field closure is strict: overnight items may contain only key,text; "
+        "primary_stories items may contain only key, headline, why_it_matters; "
+        "market_reactions items may contain only key, summary, uncertainty; "
+        "under_radar items may contain only key, headline, note; watch_today items may "
+        "contain only key,text; market_names items may contain only key,text. Do not "
+        "copy event_type, region, or entity_ids. No analysis, notes, or extra keys.\n"
         "Use natural professional Chinese financial-news language, not literal translation, "
         "bureaucratic wording, sensational language, or social-media slang. For market "
         "reaction, say observed/associated rather than caused/driven. Never add advice.\n"
@@ -338,6 +365,41 @@ def _validate_keys(content: LocalizedBriefingContent, payload: LocalizationPaylo
     for name, expected, actual in checks:
         if actual != expected:
             raise ValueError(f"localization {name} key coverage or order is invalid")
+
+
+def _schema_failure_details(
+    exc: ValidationError, payload: LocalizationPayload
+) -> tuple[str | None, str]:
+    """Return only stable schema metadata; never expose provider values or raw output."""
+    errors = exc.errors()
+    if not errors:
+        return None, "ValidationError"
+    first: Any = errors[0]
+    raw_location: Any = first.get("loc", ()) if isinstance(first, dict) else ()
+    location_parts = (
+        [str(part) for part in raw_location if isinstance(part, (str, int))]
+        if isinstance(raw_location, (tuple, list))
+        else []
+    )
+    location = ".".join(location_parts) or None
+    error_type = first.get("type") if isinstance(first, dict) else None
+    safe_type = error_type if isinstance(error_type, str) else "ValidationError"
+    summary = f"{safe_type} at {location}" if location else safe_type
+
+    failure_key: str | None = None
+    if (
+        isinstance(raw_location, (tuple, list))
+        and len(raw_location) >= 2
+        and isinstance(raw_location[0], str)
+        and isinstance(raw_location[1], int)
+    ):
+        sequence = getattr(payload, raw_location[0], None)
+        if isinstance(sequence, tuple) and 0 <= raw_location[1] < len(sequence):
+            item = sequence[raw_location[1]]
+            candidate = getattr(item, "key", None)
+            if isinstance(candidate, str):
+                failure_key = candidate
+    return failure_key, summary
 
 
 _NUMBER = re.compile(r"(?<![\d.])[-+]?\d[\d,]*(?:\.\d+)?(?![\d.])")
@@ -583,7 +645,17 @@ def parse_localization_response(
         value = _loads_strict(raw)
         if not isinstance(value, dict):
             raise ValueError("localization response must be a JSON object")
-        content = LocalizedBriefingContent.model_validate(_strict_sequence_fields(value))
+        try:
+            content = LocalizedBriefingContent.model_validate(_strict_sequence_fields(value))
+        except ValidationError as exc:
+            failure_key, failure_summary = _schema_failure_details(exc, payload)
+            raise LocalizationValidationError(
+                "localization response schema validation failed",
+                phase="schema",
+                failure_key=failure_key,
+                failure_summary=failure_summary,
+                exception_type="ValidationError",
+            ) from exc
         if briefing is not None:
             validate_localized_content(content, briefing)
     except ValueError:
@@ -653,6 +725,7 @@ def localize_briefing(
             LLMRequest(
                 prompt=build_localization_prompt(payload),
                 max_output_tokens=max_output_tokens,
+                reasoning=False,
             )
         )
     except Exception as exc:
@@ -702,6 +775,16 @@ def localize_briefing(
     try:
         content = parse_localization_response(response.content, payload, briefing)
     except Exception as exc:
+        if isinstance(exc, LocalizationValidationError):
+            failure_category = exc.exception_type
+            failure_phase = exc.phase
+            failure_key = exc.failure_key
+            failure_summary = exc.failure_summary
+        else:
+            failure_category = type(exc).__name__
+            failure_phase = None
+            failure_key = None
+            failure_summary = None
         return LocalizationResult(
             content=None,
             response=response,
@@ -718,7 +801,10 @@ def localize_briefing(
                 total_tokens=usage.total_tokens if usage is not None else None,
                 latency_seconds=elapsed,
                 snapshot_reused=False,
-                failure_category=type(exc).__name__,
+                failure_category=failure_category,
+                failure_phase=failure_phase,
+                failure_key=failure_key,
+                failure_summary=failure_summary,
             ),
         )
     return LocalizationResult(
