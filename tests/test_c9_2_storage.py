@@ -1,10 +1,13 @@
 import json
+import os
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import text
 from test_audience import NOW, _recipient
 
 from radar.audience import DeliveryKind, DeliveryMode, DeliveryRecord, DeliveryStatus, EditorialNote
+from radar.config import Settings
 from radar.storage import C9_2_AUDIENCE_DELIVERY_MIGRATION, RadarStore
 
 
@@ -44,6 +47,26 @@ def test_migration_008_is_additive_and_idempotent(tmp_path) -> None:
 
     assert {"recipient_profiles", "editorial_notes", "delivery_records"} <= tables
     assert C9_2_AUDIENCE_DELIVERY_MIGRATION in versions
+
+
+@pytest.mark.skipif(
+    os.environ.get("RADAR_TEST_POSTGRES") != "1",
+    reason="requires explicit opt-in to the configured PostgreSQL authority",
+)
+def test_migration_008_validates_postgres_boolean_columns_and_is_idempotent() -> None:
+    database_url = Settings().database_url
+    assert database_url.startswith("postgresql+psycopg://")
+    store = RadarStore(database_url)
+
+    store.initialize()
+    store.initialize()
+
+    with store.engine.connect() as connection:
+        marker_count = connection.execute(
+            text("SELECT COUNT(*) FROM schema_migrations WHERE version = :version"),
+            {"version": C9_2_AUDIENCE_DELIVERY_MIGRATION},
+        ).scalar_one()
+    assert marker_count == 1
 
 
 def test_recipient_and_editorial_note_round_trip(tmp_path) -> None:

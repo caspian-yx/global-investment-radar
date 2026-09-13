@@ -1,0 +1,136 @@
+name: C9.2 Operator Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Read-only DB verification or one operator test email
+        required: true
+        default: verify-db
+        type: choice
+        options:
+          - verify-db
+          - send-test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c9-2-operator-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      APP_ENV: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra postgres --locked
+      - name: Verify shared database authority without delivery
+        run: |
+          uv run python - <<'PY'
+          import hashlib
+
+          from sqlalchemy import text
+
+          from radar.config import Settings
+          from radar.storage import C9_2_AUDIENCE_DELIVERY_MIGRATION, RadarStore
+
+          settings = Settings()
+          if not settings.database_url.startswith("postgresql+psycopg://"):
+              raise SystemExit("durable_postgres_required")
+          store = RadarStore(settings.database_url)
+          with store.engine.connect() as connection:
+              row = connection.execute(
+                  text(
+                      "SELECT current_database(), current_user, applied_at "
+                      "FROM schema_migrations WHERE version = :version"
+                  ),
+                  {"version": C9_2_AUDIENCE_DELIVERY_MIGRATION},
+              ).one_or_none()
+          if row is None:
+              raise SystemExit("migration_008_missing")
+          fingerprint = hashlib.sha256("\x1f".join(map(str, row)).encode()).hexdigest()
+          print("MIGRATION_008=present")
+          print(f"DB_AUTHORITY_SHA256={fingerprint}")
+          PY
+      - name: Send Test To Me
+        if: ${{ inputs.mode == 'send-test' }}
+        env:
+          EMAIL_MODE: smtp
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          OPERATOR_EMAIL: ${{ secrets.OPERATOR_EMAIL }}
+          LOCALIZATION_MODEL: deepseek-v4-flash
+        run: |
+          uv run python - <<'PY'
+          from radar.audience import DeliveryStatus, normalize_email
+          from radar.cli import _latest_briefing
+          from radar.config import Settings
+          from radar.delivery import AudienceService, build_recipient_id
+          from radar.domain import stable_id
+          from radar.email import build_email_sender
+          from radar.localization import C91_RULE_VERSION, validate_localization_snapshot
+          from radar.storage import RadarStore
+
+          settings = Settings()
+          operator = settings.operator_email
+          if not operator or settings.email_mode != "smtp":
+              raise SystemExit("operator_smtp_configuration_required")
+          store = RadarStore(settings.database_url)
+          service = AudienceService(store, settings)
+          active = [r for r in service.list_recipients() if r.enabled and not r.archived]
+          recipient = store.load_recipient(build_recipient_id(operator))
+          if (
+              len(active) != 1
+              or recipient is None
+              or recipient.id != active[0].id
+              or normalize_email(recipient.email) != normalize_email(operator)
+          ):
+              raise SystemExit("exactly_one_operator_recipient_required")
+          briefing = _latest_briefing(service, None)
+          if briefing is None:
+              raise SystemExit("canonical_briefing_required")
+          test_id = stable_id(
+              "c9.2-test-delivery",
+              f"{briefing.run_id}|{briefing.id}|{recipient.id}|{operator}",
+          )
+          if store.load_delivery(test_id) is not None:
+              raise SystemExit("test_identity_already_reserved")
+          requested_model = settings.localization_model or settings.llm_model
+          snapshot = (
+              store.load_localization_snapshot(
+                  briefing.id, "zh-CN", C91_RULE_VERSION, requested_model
+              )
+              if requested_model
+              else None
+          )
+          if snapshot is not None:
+              validate_localization_snapshot(snapshot, briefing)
+          sender = build_email_sender(settings)
+          record = service.send_test(
+              briefing,
+              recipient.id,
+              sender,
+              localized=snapshot.content if snapshot is not None else None,
+          )
+          if record is None:
+              raise SystemExit("test_record_missing")
+          print(f"TEST_STATUS={record.status.value}")
+          print(f"TEST_RENDERED_LOCALE={record.rendered_locale}")
+          print(f"TEST_SUBJECT_PREFIX_OK={record.subject.startswith('[TEST] ')}")
+          print(f"TEST_SNAPSHOT_REUSED={snapshot is not None}")
+          print(f"TEST_ERROR_TYPE={record.error_type or 'none'}")
+          if record.status is not DeliveryStatus.SENT:
+              raise SystemExit("test_smtp_failed")
+          PY

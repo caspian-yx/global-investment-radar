@@ -571,7 +571,7 @@ class RadarStore:
                 "OR normalized_email IS NULL OR TRIM(normalized_email) = '' "
                 "OR delivery_mode NOT IN ('english', 'chinese', 'bilingual') "
                 "OR locale NOT IN ('en', 'zh-CN') "
-                "OR (archived = 1 AND enabled = 1)"
+                "OR (archived IS TRUE AND enabled IS TRUE)"
             )
         ).scalar_one()
         invalid_deliveries = connection.execute(

@@ -7,6 +7,9 @@ import subprocess
 from pathlib import Path
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "daily.yml"
+OPERATOR_VALIDATION_WORKFLOW = (
+    Path(__file__).parents[1] / ".github" / "workflows" / "operator-validation.yml"
+)
 RADAR_COMMAND = "uv run radar daily --ai"
 
 
@@ -118,3 +121,18 @@ def test_localization_cannot_silently_run_in_no_ai_mode(tmp_path) -> None:
 
     assert completed.returncode == 2
     assert "Chinese localization requires run_mode=ai" in completed.stderr
+
+
+def test_operator_validation_workflow_is_manual_and_non_delivery_by_default() -> None:
+    workflow = OPERATOR_VALIDATION_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "default: verify-db" in workflow
+    assert "- send-test" in workflow
+    assert "schedule:" not in workflow
+    assert "if: ${{ inputs.mode == 'send-test' }}" in workflow
+    assert "service.send_test(" in workflow
+    assert "radar daily" not in workflow
+    assert "--audience" not in workflow
+    assert "DATABASE_URL: ${{ secrets.DATABASE_URL }}" in workflow
+    assert "SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}" in workflow
