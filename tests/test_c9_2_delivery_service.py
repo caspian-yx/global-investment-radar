@@ -1,5 +1,6 @@
 import pytest
 from test_briefing_composition import _compose
+from test_localization_storage import _snapshot
 
 from radar.audience import DeliveryKind, DeliveryMode, DeliveryStatus
 from radar.config import Settings
@@ -181,3 +182,40 @@ def test_preview_is_render_only_and_send_test_targets_operator(tmp_path) -> None
         item.delivery_kind is DeliveryKind.PRODUCTION
         for item in store.list_delivery_records(briefing.run_id)
     )
+
+
+def test_bilingual_preview_reuses_persisted_localization_without_delivery(tmp_path) -> None:
+    store = _store(tmp_path)
+    service = AudienceService(store, _settings(localization_model="deepseek-v4-flash"))
+    recipient = service.add_recipient("A", "a@example.com", DeliveryMode.BILINGUAL, None)
+    briefing, _ = _compose()
+    snapshot = _snapshot(briefing)
+    store.save_localization_snapshot(snapshot)
+
+    preview = service.preview(briefing, recipient.id)
+
+    assert preview.rendered_locale == "zh-CN"
+    assert "全球投资雷达" in preview.html
+    assert "English reference" in preview.html
+    assert store.list_delivery_records(briefing.run_id) == ()
+
+
+def test_bilingual_send_test_reuses_snapshot_and_records_its_identity(tmp_path) -> None:
+    store = _store(tmp_path)
+    service = AudienceService(
+        store,
+        _settings(operator_email="operator@example.com", localization_model="deepseek-v4-flash"),
+    )
+    recipient = service.add_recipient("A", "a@example.com", DeliveryMode.BILINGUAL, None)
+    briefing, _ = _compose()
+    snapshot = _snapshot(briefing)
+    store.save_localization_snapshot(snapshot)
+    sender = _Sender()
+
+    record = service.send_test(briefing, recipient.id, sender)
+
+    assert record is not None
+    assert record.rendered_locale == "zh-CN"
+    assert record.localization_snapshot_id == snapshot.id
+    assert record.subject.startswith("[TEST] ")
+    assert sender.calls == ["operator@example.com"]

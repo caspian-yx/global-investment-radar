@@ -20,7 +20,12 @@ from radar.briefing import DailyIntelligenceBrief
 from radar.config import Settings
 from radar.domain import content_hash, stable_id
 from radar.email import RecipientEmailSender
-from radar.localization import LocalizedBriefingContent
+from radar.localization import (
+    C91_RULE_VERSION,
+    LocalizationSnapshot,
+    LocalizedBriefingContent,
+    validate_localization_snapshot,
+)
 from radar.report import RecipientComposition, render_recipient_email
 from radar.storage import RadarStore
 
@@ -243,7 +248,13 @@ class AudienceService:
 
     def preview(self, briefing: DailyIntelligenceBrief, recipient_id: str) -> RenderedDelivery:
         recipient = self._require_recipient(recipient_id)
-        return self._render(briefing, recipient, is_test=False)
+        snapshot = self._existing_localization(briefing, recipient)
+        return self._render(
+            briefing,
+            recipient,
+            is_test=False,
+            localized=snapshot.content if snapshot is not None else None,
+        )
 
     def send_test(
         self,
@@ -256,6 +267,9 @@ class AudienceService:
         operator_email = self.settings.operator_email
         if not operator_email:
             raise AudienceValidationError("operator email is required for test delivery")
+        snapshot = self._existing_localization(briefing, recipient) if localized is None else None
+        if snapshot is not None:
+            localized = snapshot.content
         rendered = self._render(briefing, recipient, is_test=True, localized=localized)
         now = datetime.now(UTC)
         record = DeliveryRecord(
@@ -276,7 +290,7 @@ class AudienceService:
             attempted_at=now,
             accepted_at=None,
             error_type=None,
-            localization_snapshot_id=None,
+            localization_snapshot_id=snapshot.id if snapshot is not None else None,
             html_hash=content_hash(rendered.html),
             fallback_reason=(
                 "localization_unavailable"
@@ -370,6 +384,21 @@ class AudienceService:
         if recipient is None:
             raise AudienceValidationError("recipient not found")
         return recipient
+
+    def _existing_localization(
+        self, briefing: DailyIntelligenceBrief, recipient: RecipientProfile
+    ) -> LocalizationSnapshot | None:
+        if recipient.delivery_mode is DeliveryMode.ENGLISH:
+            return None
+        requested_model = self.settings.localization_model or self.settings.llm_model
+        if not requested_model:
+            return None
+        snapshot = self.store.load_localization_snapshot(
+            briefing.id, recipient.locale, C91_RULE_VERSION, requested_model
+        )
+        if snapshot is not None:
+            validate_localization_snapshot(snapshot, briefing)
+        return snapshot
 
     def _render(
         self,

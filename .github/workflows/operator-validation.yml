@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Read-only DB verification or one operator test email
+        description: Verify DB, seed a no-delivery briefing, or send one operator test
         required: true
         default: verify-db
         type: choice
         options:
           - verify-db
+          - seed-briefing
           - send-test
 
 permissions:
@@ -22,7 +23,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     env:
       APP_ENV: production
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -61,6 +62,49 @@ jobs:
           print("MIGRATION_008=present")
           print(f"DB_AUTHORITY_SHA256={fingerprint}")
           PY
+      - name: Seed canonical briefing without delivery
+        if: ${{ inputs.mode == 'seed-briefing' }}
+        env:
+          DATA_MODE: live
+          BUSINESS_TIMEZONE: Asia/Shanghai
+          LOOKBACK_HOURS: "48"
+          AI_ENABLED: "true"
+          DAILY_LLM_BUDGET: "1"
+          AI_MAX_REQUESTS_PER_RUN: "10"
+          LLM_PROVIDER: deepseek
+          LLM_MODEL: deepseek-v4-flash
+          LOCALIZATION_ENABLED: "true"
+          LOCALIZATION_LOCALE: zh-CN
+          LOCALIZATION_MODEL: deepseek-v4-flash
+          LOCALIZATION_TIMEOUT_SECONDS: "90"
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}
+          EMAIL_MODE: disabled
+          AUDIENCE_ENABLED: "false"
+        run: |
+          mkdir -p outputs
+          uv run radar daily --ai > outputs/seed-result.json
+          uv run python - <<'PY'
+          from sqlalchemy import text
+
+          from radar.config import Settings
+          from radar.storage import RadarStore
+
+          store = RadarStore(Settings().database_url)
+          with store.engine.connect() as connection:
+              briefings = connection.execute(
+                  text("SELECT COUNT(*) FROM c9_daily_briefings")
+              ).scalar_one()
+              localizations = connection.execute(
+                  text("SELECT COUNT(*) FROM c9_localizations")
+              ).scalar_one()
+              deliveries = connection.execute(
+                  text("SELECT COUNT(*) FROM delivery_records")
+              ).scalar_one()
+          print(f"C9_BRIEFING_COUNT={briefings}")
+          print(f"C91_LOCALIZATION_COUNT={localizations}")
+          print(f"DELIVERY_RECORD_COUNT={deliveries}")
+          PY
       - name: Send Test To Me
         if: ${{ inputs.mode == 'send-test' }}
         env:
@@ -80,7 +124,6 @@ jobs:
           from radar.delivery import AudienceService, build_recipient_id
           from radar.domain import stable_id
           from radar.email import build_email_sender
-          from radar.localization import C91_RULE_VERSION, validate_localization_snapshot
           from radar.storage import RadarStore
 
           settings = Settings()
@@ -107,29 +150,18 @@ jobs:
           )
           if store.load_delivery(test_id) is not None:
               raise SystemExit("test_identity_already_reserved")
-          requested_model = settings.localization_model or settings.llm_model
-          snapshot = (
-              store.load_localization_snapshot(
-                  briefing.id, "zh-CN", C91_RULE_VERSION, requested_model
-              )
-              if requested_model
-              else None
-          )
-          if snapshot is not None:
-              validate_localization_snapshot(snapshot, briefing)
           sender = build_email_sender(settings)
           record = service.send_test(
               briefing,
               recipient.id,
               sender,
-              localized=snapshot.content if snapshot is not None else None,
           )
           if record is None:
               raise SystemExit("test_record_missing")
           print(f"TEST_STATUS={record.status.value}")
           print(f"TEST_RENDERED_LOCALE={record.rendered_locale}")
           print(f"TEST_SUBJECT_PREFIX_OK={record.subject.startswith('[TEST] ')}")
-          print(f"TEST_SNAPSHOT_REUSED={snapshot is not None}")
+          print(f"TEST_SNAPSHOT_REUSED={record.localization_snapshot_id is not None}")
           print(f"TEST_ERROR_TYPE={record.error_type or 'none'}")
           if record.status is not DeliveryStatus.SENT:
               raise SystemExit("test_smtp_failed")

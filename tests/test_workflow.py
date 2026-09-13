@@ -132,7 +132,16 @@ def test_operator_validation_workflow_is_manual_and_non_delivery_by_default() ->
     assert "schedule:" not in workflow
     assert "if: ${{ inputs.mode == 'send-test' }}" in workflow
     assert "service.send_test(" in workflow
-    assert "radar daily" not in workflow
     assert "--audience" not in workflow
     assert "DATABASE_URL: ${{ secrets.DATABASE_URL }}" in workflow
     assert "SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}" in workflow
+
+
+def test_operator_validation_can_seed_a_briefing_without_delivery() -> None:
+    workflow = OPERATOR_VALIDATION_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "- seed-briefing" in workflow
+    assert "if: ${{ inputs.mode == 'seed-briefing' }}" in workflow
+    assert "EMAIL_MODE: disabled" in workflow
+    assert 'AUDIENCE_ENABLED: "false"' in workflow
+    assert "uv run radar daily --ai" in workflow
