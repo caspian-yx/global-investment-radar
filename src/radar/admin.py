@@ -7,19 +7,24 @@ import hmac
 import html
 import logging
 import secrets
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from radar.admin_console import (
+    AdminLanguage,
     DeliveryFilters,
     OperatorConsoleService,
+    normalize_admin_language,
     render_briefings_page,
     render_dashboard_page,
     render_deliveries_page,
     render_layout,
     render_preview_page,
+    render_settings_page,
     render_system_page,
+    ui,
 )
 from radar.audience import (
     DeliveryKind,
@@ -105,6 +110,28 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _redirect(self, location: str, *, set_cookie: str | None = None) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        if set_cookie is not None:
+            self.send_header("Set-Cookie", set_cookie)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def _current_location(self) -> str:
+        parsed = urlparse(self.path)
+        return (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+
+    def _language(self) -> AdminLanguage:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except CookieError:
+            return "en"
+        morsel = cookie.get("radar_admin_language")
+        return normalize_admin_language(morsel.value if morsel is not None else None)
+
     def _unauthorized(self) -> None:
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="radar-admin"')
@@ -130,24 +157,33 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
                 return
             query = parse_qs(parsed.query)
             page = query.get("page", ["dashboard"])[0]
+            language = self._language()
             if page == "dashboard":
-                body = render_dashboard_page(self._console(), self._csrf())
+                body = render_dashboard_page(self._console(), self._csrf(), language)
             elif page == "recipients":
-                body = render_layout("recipients", "Recipients", self._index(), self._csrf())
+                body = render_layout(
+                    "recipients", ui(language, "recipients"), self._index(language), self._csrf(), language
+                )
             elif page == "daily-message":
                 body = render_layout(
-                    "daily-message", "Daily Message", self._daily_message_page(), self._csrf()
+                    "daily-message",
+                    ui(language, "daily_message"),
+                    self._daily_message_page(language),
+                    self._csrf(),
+                    language,
                 )
             elif page == "preview":
-                body = render_preview_page(self._console(), self._csrf())
+                body = render_preview_page(self._console(), self._csrf(), language)
             elif page == "deliveries":
                 body = render_deliveries_page(
-                    self._console(), self._csrf(), self._delivery_filters(query)
+                    self._console(), self._csrf(), self._delivery_filters(query), language
                 )
             elif page == "briefings":
-                body = render_briefings_page(self._console(), self._csrf())
+                body = render_briefings_page(self._console(), self._csrf(), language)
+            elif page == "settings":
+                body = render_settings_page(self._csrf(), language)
             elif page == "system":
-                body = render_system_page(self._console(), self._csrf())
+                body = render_system_page(self._console(), self._csrf(), language)
             else:
                 self._reply(404, "Page not found.")
                 return
@@ -172,13 +208,27 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             return
         try:
             self._mutate(fields)
-            self._reply(200, "OK")
+            if fields.get("action") == "set_language":
+                language = normalize_admin_language(fields.get("language"))
+                self._redirect(
+                    self._current_location(),
+                    set_cookie=(
+                        f"radar_admin_language={language}; Path=/; Max-Age=31536000; "
+                        "HttpOnly; SameSite=Lax"
+                    ),
+                )
+            else:
+                self._redirect(self._current_location())
         except (AudienceValidationError, ValueError, KeyError):
             self._reply(400, "Request could not be completed.")
 
     def _mutate(self, fields: dict[str, str]) -> None:
         service = self._service()
         action = fields.get("action", "")
+        if action == "set_language":
+            if fields.get("language") not in {"en", "zh-CN"}:
+                raise AudienceValidationError("unsupported admin language")
+            return
         if action == "add":
             service.add_recipient(
                 fields["display_name"],
@@ -218,53 +268,58 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
         else:
             raise AudienceValidationError("unknown admin action")
 
-    def _index(self) -> str:
+    def _index(self, language: AdminLanguage = "en") -> str:
         service = self._service()
         recipients = service.store.list_recipients(include_archived=True)
-        rows = "".join(self._recipient_row(item) for item in recipients)
+        rows = "".join(self._recipient_row(item, language) for item in recipients)
         note = self._latest_note()
         note_value = self.render_value(note.message if note is not None else "")
         csrf = self._csrf()
         add_form = (
             "<form method='post'><input type='hidden' name='action' value='add'>"
             f"<input type='hidden' name='csrf_token' value='{self.render_value(csrf)}'>"
-            "<input name='display_name' placeholder='Display name' required>"
+            f"<input name='display_name' placeholder='{('显示名称' if language == 'zh-CN' else 'Display name')}' required>"
             "<input name='email' type='email' placeholder='Email' required>"
             "<select name='mode'><option value='english'>english</option>"
             "<option value='chinese'>chinese</option><option value='bilingual' selected>bilingual</option></select>"
             "<small class='muted'>Locale follows mode: en for English, zh-CN otherwise.</small>"
-            "<textarea name='note' maxlength='2000' placeholder='Optional personal note'></textarea>"
-            "<button>Add recipient</button></form>"
+            f"<textarea name='note' maxlength='2000' placeholder='{('可选个人备注' if language == 'zh-CN' else 'Optional personal note')}'></textarea>"
+            f"<button>{'添加收件人' if language == 'zh-CN' else 'Add recipient'}</button></form>"
         )
         message_form = (
             "<form method='post'><input type='hidden' name='action' value='editorial_save'>"
             f"<input type='hidden' name='csrf_token' value='{self.render_value(csrf)}'>"
             f"<textarea name='message' maxlength='2000'>{note_value}</textarea>"
-            "<button>Save editorial note</button></form>"
+            f"<button>{'保存编辑备注' if language == 'zh-CN' else 'Save editorial note'}</button></form>"
             "<form method='post'><input type='hidden' name='action' value='editorial_clear'>"
             f"<input type='hidden' name='csrf_token' value='{self.render_value(csrf)}'>"
-            "<button>Clear editorial note</button></form>"
+            f"<button>{'清除编辑备注' if language == 'zh-CN' else 'Clear editorial note'}</button></form>"
         )
         active_count = sum(item.enabled and not item.archived for item in recipients)
         delivery = (
-            f"<p>Active recipients: {active_count} / {service.settings.max_active_recipients}</p>"
+            f"<p>{'活跃收件人' if language == 'zh-CN' else 'Active recipients'}: {active_count} / {service.settings.max_active_recipients}</p>"
         )
         return (
-            "<div class='panel'><h2>Recipients</h2><p class='muted'>Manage private-beta audience profiles. "
-            "Creation never sends automatically.</p>" + add_form + "<table>"
-            "<tr><th>Name</th><th>Email</th><th>Mode</th><th>State</th>"
-            "<th>Locale</th><th>Note</th><th>Status</th><th>Updated</th>"
-            "<th>Actions / latest delivery</th></tr>"
+            f"<div class='panel'><h2>{ui(language, 'recipients')}</h2><p class='muted'>{('管理私有测试收件人配置。创建不会自动发送邮件。' if language == 'zh-CN' else 'Manage private-beta audience profiles. Creation never sends automatically.')}</p>" + add_form + "<table>"
+            f"<tr><th>{('名称' if language == 'zh-CN' else 'Name')}</th><th>Email</th><th>Mode</th><th>{('状态' if language == 'zh-CN' else 'State')}</th>"
+            f"<th>Locale</th><th>{('备注' if language == 'zh-CN' else 'Note')}</th><th>{('状态' if language == 'zh-CN' else 'Status')}</th><th>{('更新时间' if language == 'zh-CN' else 'Updated')}</th>"
+            f"<th>{('操作 / 最近投递' if language == 'zh-CN' else 'Actions / latest delivery')}</th></tr>"
             + rows
-            + "</table></div><div class='panel'><h2>Daily Message</h2>"
+            + "</table></div><div class='panel'><h2>"
+            + ui(language, "daily_message")
+            + "</h2>"
             + message_form
-            + "</div><div class='panel'><h2>Audience safety</h2>"
+            + "</div><div class='panel'><h2>"
+            + ("收件人安全" if language == "zh-CN" else "Audience safety")
+            + "</h2>"
             + delivery
-            + "<p>Production delivery remains workflow-controlled. Preview and operator test delivery "
-            "are available per recipient.</p></div>"
+            + ("<p>生产投递仍由 workflow 控制。每个收件人都可以单独预览或发送运营者测试邮件。</p>"
+               if language == "zh-CN"
+               else "<p>Production delivery remains workflow-controlled. Preview and operator test delivery are available per recipient.</p>")
+            + "</div>"
         )
 
-    def _recipient_row(self, item: RecipientProfile) -> str:
+    def _recipient_row(self, item: RecipientProfile, language: AdminLanguage = "en") -> str:
         action = "disable" if item.enabled else "enable"
         mode_options = "".join(
             (
@@ -289,29 +344,29 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             + "<button>Save recipient</button></form></details>"
         )
         test_form = (
-            "<form method='post' onsubmit=\"return confirm('Send a test to the operator only?')\">"
+            f"<form method='post' onsubmit=\"return confirm('{('只发送给运营者吗？' if language == 'zh-CN' else 'Send a test to the operator only?')}')\">"
             "<input type='hidden' name='action' value='send_test'>"
             f"<input type='hidden' name='csrf_token' value='{self.render_value(self._csrf())}'>"
             + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
-            + "<button>Send Test To Me</button></form>"
+            + f"<button>{'发送测试邮件给我' if language == 'zh-CN' else 'Send Test To Me'}</button></form>"
         )
         toggle_form = (
             "<span class='badge'>archived</span>"
             if item.archived
             else (
-                "<form method='post' onsubmit=\"return confirm('Change this recipient status?')\">"
+                f"<form method='post' onsubmit=\"return confirm('{('更改此收件人状态吗？' if language == 'zh-CN' else 'Change this recipient status?')}')\">"
                 f"<input type='hidden' name='action' value='{action}'>"
                 f"<input type='hidden' name='csrf_token' value='{self.render_value(self._csrf())}'>"
                 f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
-                f"<button class='secondary'>{action}</button></form>"
+                f"<button class='secondary'>{('启用' if action == 'enable' else '停用') if language == 'zh-CN' else action}</button></form>"
             )
         )
         archive_form = (
-            "<form method='post' onsubmit=\"return confirm('Archive this recipient?')\">"
+            f"<form method='post' onsubmit=\"return confirm('{('归档此收件人吗？' if language == 'zh-CN' else 'Archive this recipient?')}')\">"
             "<input type='hidden' name='action' value='remove'>"
             f"<input type='hidden' name='csrf_token' value='{self.render_value(self._csrf())}'>"
             f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
-            "<button class='danger'>archive</button></form>"
+            f"<button class='danger'>{'归档' if language == 'zh-CN' else 'archive'}</button></form>"
             if not item.archived
             else ""
         )
@@ -380,31 +435,33 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             values["date"] = requested_date
         return DeliveryFilters.model_validate(values)
 
-    def _daily_message_page(self) -> str:
+    def _daily_message_page(self, language: AdminLanguage = "en") -> str:
         briefing = self._latest_briefing()
         if briefing is None:
             return (
-                "<div class='panel'><h2>Daily Message</h2>"
+                f"<div class='panel'><h2>{ui(language, 'daily_message')}</h2>"
                 "<div class='empty'>No canonical briefing is available.</div></div>"
             )
         note = self._latest_note()
         message = self.render_value(note.message if note is not None else "")
         csrf = self.render_value(self._csrf())
         body = (
-            "<div class='panel'><h2>Editorial note</h2>"
+            f"<div class='panel'><h2>{'编辑备注' if language == 'zh-CN' else 'Editorial note'}</h2>"
             f"<p class='muted'>Applies to briefing {self.render_value(briefing.id)} "
             f"from run {self.render_value(briefing.run_id)} · {self.render_value(briefing.report_date)}</p>"
-            "<p>External delivery metadata only; it does not modify Radar intelligence.</p>"
-            "<form method='post' class='stack'><input type='hidden' name='action' value='editorial_save'>"
-            f"<input type='hidden' name='csrf_token' value='{csrf}'>"
-            f"<textarea name='message' maxlength='2000' placeholder='Optional note'>{message}</textarea>"
-            "<button>Save note</button></form>"
-            "<form method='post'><input type='hidden' name='action' value='editorial_clear'>"
-            f"<input type='hidden' name='csrf_token' value='{csrf}'><button class='secondary'>Clear note</button></form>"
-            "</div>"
+            + ("<p>仅用于外部投递元数据，不会修改 Radar intelligence。</p>"
+               if language == "zh-CN"
+               else "<p>External delivery metadata only; it does not modify Radar intelligence.</p>")
+            + "<form method='post' class='stack'><input type='hidden' name='action' value='editorial_save'>"
+            + f"<input type='hidden' name='csrf_token' value='{csrf}'>"
+            + f"<textarea name='message' maxlength='2000' placeholder='Optional note'>{message}</textarea>"
+            + f"<button>{'保存备注' if language == 'zh-CN' else 'Save note'}</button></form>"
+            + "<form method='post'><input type='hidden' name='action' value='editorial_clear'>"
+            + f"<input type='hidden' name='csrf_token' value='{csrf}'><button class='secondary'>{'清除备注' if language == 'zh-CN' else 'Clear note'}</button></form>"
+            + "</div>"
         )
         return (
-            "<div class='panel'><h2>Current briefing</h2>"
+            f"<div class='panel'><h2>{'当前简报' if language == 'zh-CN' else 'Current briefing'}</h2>"
             f"<p>{self.render_value(briefing.view_name)} · {self.render_value(briefing.report_date)} · "
             f"Primary {len(briefing.primary_stories)}</p></div>" + body
         )

@@ -71,6 +71,123 @@ def test_admin_routes_have_shared_shell_and_require_csrf_for_mutations(tmp_path)
         thread.join(timeout=2)
 
 
+def test_successful_recipient_submission_redirects_back_to_current_page(tmp_path) -> None:
+    service = _service(tmp_path)
+    token = "test-admin-token"
+    AudienceAdminHandler.service = service
+    AudienceAdminHandler.admin_token = token
+    AudienceAdminHandler.csrf_token = "csrf-test-token"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AudienceAdminHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        headers = {
+            "Authorization": authorization_header("operator", token),
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        connection.request(
+            "POST",
+            "/?page=recipients",
+            body=urlencode(
+                {
+                    "action": "add",
+                    "csrf_token": "csrf-test-token",
+                    "display_name": "Alice",
+                    "email": "alice@example.com",
+                    "mode": "bilingual",
+                }
+            ),
+            headers=headers,
+        )
+        response = connection.getresponse()
+        response.read()
+
+        assert response.status == 303
+        assert response.getheader("Location") == "/?page=recipients"
+        recipient = service.list_recipients()[0]
+        assert recipient.display_name == "Alice"
+
+        connection.request(
+            "POST",
+            "/?page=recipients",
+            body=urlencode(
+                {
+                    "action": "disable",
+                    "csrf_token": "csrf-test-token",
+                    "recipient_id": recipient.id,
+                }
+            ),
+            headers=headers,
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 303
+        assert response.getheader("Location") == "/?page=recipients"
+        assert service.list_recipients()[0].enabled is False
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_admin_settings_switches_ui_language_without_translating_values(tmp_path) -> None:
+    service = _service(tmp_path)
+    token = "test-admin-token"
+    AudienceAdminHandler.service = service
+    AudienceAdminHandler.admin_token = token
+    AudienceAdminHandler.csrf_token = "csrf-test-token"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AudienceAdminHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        headers = {"Authorization": authorization_header("operator", token)}
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", "/?page=settings", headers=headers)
+        response = connection.getresponse()
+        english_page = response.read().decode()
+        assert response.status == 200
+        assert "Settings" in english_page
+        assert "中文" in english_page
+
+        connection.request(
+            "POST",
+            "/?page=settings",
+            body=urlencode(
+                {
+                    "action": "set_language",
+                    "language": "zh-CN",
+                    "csrf_token": "csrf-test-token",
+                }
+            ),
+            headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        response = connection.getresponse()
+        response.read()
+        cookie = response.getheader("Set-Cookie")
+        assert response.status == 303
+        assert response.getheader("Location") == "/?page=settings"
+        assert cookie is not None and "radar_admin_language=zh-CN" in cookie
+
+        connection.request(
+            "GET",
+            "/?page=system",
+            headers={**headers, "Cookie": "radar_admin_language=zh-CN"},
+        )
+        response = connection.getresponse()
+        chinese_page = response.read().decode()
+        assert response.status == 200
+        assert "设置" in chinese_page
+        assert "系统" in chinese_page
+        assert "PostgreSQL" in chinese_page
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_admin_edit_rejects_normalized_email_owned_by_another_recipient(tmp_path) -> None:
     service = _service(tmp_path)
     first = service.add_recipient("Alice", "alice@example.com", DeliveryMode.ENGLISH, None)
