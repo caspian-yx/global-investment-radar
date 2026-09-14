@@ -33,7 +33,7 @@ def test_daily_workflow_has_failure_safe_artifact_constraints() -> None:
 
     assert "shell: bash" in workflow
     assert "secrets." not in job_environment
-    assert 'AI_ENABLED: "true"' in job_environment
+    assert "AI_ENABLED: ${{ github.event_name == 'schedule' && 'true'" in job_environment
     assert 'DAILY_LLM_BUDGET: "1"' in job_environment
     assert 'AI_MAX_REQUESTS_PER_RUN: "10"' in job_environment
     assert "LLM_PROVIDER: deepseek" in job_environment
@@ -75,7 +75,7 @@ def test_daily_workflow_script_preserves_failure_through_tee(tmp_path) -> None:
     )
 
 
-def test_manual_localization_is_explicit_and_schedule_stays_disabled() -> None:
+def test_schedule_activates_localized_audience_while_manual_defaults_stay_safe() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "localization_mode:" in workflow
@@ -83,13 +83,29 @@ def test_manual_localization_is_explicit_and_schedule_stays_disabled() -> None:
     assert "- zh-CN" in workflow
     localization_switch = (
         "LOCALIZATION_ENABLED: "
-        "${{ inputs.localization_mode == 'zh-CN' && 'true' || 'false' }}"
+        "${{ github.event_name == 'schedule' && 'true' || "
+        "(inputs.localization_mode == 'zh-CN' && 'true' || 'false') }}"
     )
     assert localization_switch in workflow
     assert "LOCALIZATION_LOCALE: zh-CN" in workflow
     assert 'LOCALIZATION_MODEL: "deepseek-v4-flash"' in workflow
     assert 'LOCALIZATION_TIMEOUT_SECONDS: "90"' in workflow
-    assert "AI_ENABLED: ${{ inputs.run_mode == 'no-ai' && 'false' || 'true' }}" in workflow
+    assert (
+        "RUN_MODE: ${{ github.event_name == 'schedule' && 'ai' || "
+        "inputs.run_mode || 'ai' }}"
+    ) in workflow
+    assert (
+        "AI_ENABLED: ${{ github.event_name == 'schedule' && 'true' || "
+        "(inputs.run_mode == 'no-ai' && 'false' || 'true') }}"
+    ) in workflow
+    assert (
+        "DELIVERY_TARGET: ${{ github.event_name == 'schedule' && 'audience' || "
+        "inputs.delivery_target || 'single' }}"
+    ) in workflow
+    assert (
+        "AUDIENCE_ENABLED: ${{ github.event_name == 'schedule' && 'true' || "
+        "(inputs.delivery_target == 'audience' && 'true' || 'false') }}"
+    ) in workflow
 
 
 def test_audience_delivery_requires_explicit_manual_target_and_never_starts_admin() -> None:
@@ -104,6 +120,7 @@ def test_audience_delivery_requires_explicit_manual_target_and_never_starts_admi
     assert "radar admin" not in workflow
     assert "EMAIL_TO" in workflow
     assert "recipient@example" not in workflow
+    assert "github.event_name == 'schedule' && 'audience'" in workflow
 
 
 def test_localization_cannot_silently_run_in_no_ai_mode(tmp_path) -> None:

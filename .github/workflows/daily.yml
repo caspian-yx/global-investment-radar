@@ -54,20 +54,20 @@ jobs:
     env:
       APP_ENV: production
       DATA_MODE: ${{ inputs.data_mode || 'live' }}
-      RUN_MODE: ${{ inputs.run_mode || 'ai' }}
+      RUN_MODE: ${{ github.event_name == 'schedule' && 'ai' || inputs.run_mode || 'ai' }}
       BUSINESS_TIMEZONE: Asia/Shanghai
       LOOKBACK_HOURS: "48"
-      AI_ENABLED: "true"
+      AI_ENABLED: ${{ github.event_name == 'schedule' && 'true' || (inputs.run_mode == 'no-ai' && 'false' || 'true') }}
       DAILY_LLM_BUDGET: "1"
       AI_MAX_REQUESTS_PER_RUN: "10"
       LLM_PROVIDER: deepseek
       LLM_MODEL: "deepseek-v4-flash"
-      LOCALIZATION_ENABLED: ${{ inputs.localization_mode == 'zh-CN' && 'true' || 'false' }}
+      LOCALIZATION_ENABLED: ${{ github.event_name == 'schedule' && 'true' || (inputs.localization_mode == 'zh-CN' && 'true' || 'false') }}
       LOCALIZATION_LOCALE: zh-CN
       LOCALIZATION_MODEL: "deepseek-v4-flash"
       LOCALIZATION_TIMEOUT_SECONDS: "90"
-      DELIVERY_TARGET: ${{ inputs.delivery_target || 'single' }}
-      AUDIENCE_ENABLED: ${{ inputs.delivery_target == 'audience' && 'true' || 'false' }}
+      DELIVERY_TARGET: ${{ github.event_name == 'schedule' && 'audience' || inputs.delivery_target || 'single' }}
+      AUDIENCE_ENABLED: ${{ github.event_name == 'schedule' && 'true' || (inputs.delivery_target == 'audience' && 'true' || 'false') }}
       EMAIL_MODE: smtp
       REPORT_OUTPUT_DIR: outputs/reports
     steps:
@@ -85,13 +85,13 @@ jobs:
         run: uv sync --extra postgres --locked
       - name: Show safe effective configuration
         env:
-          AI_ENABLED: ${{ inputs.run_mode == 'no-ai' && 'false' || 'true' }}
+          AI_ENABLED: ${{ github.event_name == 'schedule' && 'true' || (inputs.run_mode == 'no-ai' && 'false' || 'true') }}
           DATABASE_URL: ${{ secrets.DATABASE_URL || 'sqlite:///work/radar.db' }}
         run: uv run radar doctor
       - name: Run live AI radar and deliver email
         shell: bash
         env:
-          AI_ENABLED: ${{ inputs.run_mode == 'no-ai' && 'false' || 'true' }}
+          AI_ENABLED: ${{ github.event_name == 'schedule' && 'true' || (inputs.run_mode == 'no-ai' && 'false' || 'true') }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}

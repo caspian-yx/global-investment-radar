@@ -189,7 +189,13 @@ single   (default)
 audience
 ```
 
-Scheduled runs resolve to `single` and retain current AI/localization behavior. Manual `single` retains the current `EMAIL_TO` route. Only manual `audience` invokes `radar daily --audience`. The workflow never starts admin. Audience mode fails before sends when durable `DATABASE_URL` or production SMTP configuration is absent; `OPERATOR_EMAIL` is additionally required only for the operator-only send-test path. No audience recipients are auto-imported from `EMAIL_TO`.
+Scheduled runs now intentionally resolve to `live + ai + zh-CN + audience` as the
+private-beta production product. Manual dispatch still defaults to `live + no-ai +
+single`; only an explicit manual `audience` choice invokes `radar daily --audience`.
+The workflow never starts admin. Audience mode fails before sends when durable
+`DATABASE_URL` or production SMTP configuration is absent; `OPERATOR_EMAIL` is
+additionally required only for the operator-only send-test path. No audience
+recipients are auto-imported from `EMAIL_TO`.
 
 ## 10. Observability and privacy
 

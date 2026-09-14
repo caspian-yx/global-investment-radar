@@ -174,7 +174,8 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
         return (
             "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             "<title>Radar Admin</title></head><body><h1>Audience</h1>" + add_form + "<table>"
-            "<tr><th>Name</th><th>Email</th><th>Mode</th><th>Status</th></tr>"
+            "<tr><th>Name</th><th>Email</th><th>Mode</th><th>Status</th>"
+            "<th>Locale</th><th>Actions / latest delivery</th></tr>"
             + rows
             + "</table><h2>Message</h2>"
             + message_form
@@ -186,6 +187,32 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
 
     def _recipient_row(self, item: RecipientProfile) -> str:
         action = "disable" if item.enabled else "enable"
+        mode_options = "".join(
+            (
+                f"<option value='{mode.value}'"
+                + (" selected" if item.delivery_mode is mode else "")
+                + f">{mode.value}</option>"
+            )
+            for mode in DeliveryMode
+        )
+        edit_form = (
+            "<details><summary>Edit</summary>"
+            "<form method='post'><input type='hidden' name='action' value='edit'>"
+            + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
+            + f"<input name='display_name' value='{self.render_value(item.display_name)}' required>"
+            + f"<input name='email' type='email' value='{self.render_value(item.email)}' required>"
+            + f"<select name='mode'>{mode_options}</select>"
+            + (
+                "<textarea name='note' maxlength='2000'>"
+                f"{self.render_value(item.personal_note or '')}</textarea>"
+            )
+            + "<button>Save recipient</button></form></details>"
+        )
+        test_form = (
+            "<form method='post'><input type='hidden' name='action' value='send_test'>"
+            + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
+            + "<button>Send Test To Me</button></form>"
+        )
         return (
             "<tr><td>"
             + self.render_value(item.display_name)
@@ -196,15 +223,41 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             + "</td><td>"
             + ("enabled" if item.enabled else "disabled")
             + "</td><td>"
+            + self.render_value(item.locale)
+            + "</td><td>"
             + f"<form method='post'><input type='hidden' name='action' value='{action}'>"
             + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
             + f"<button>{action}</button></form>"
             + "<form method='post'><input type='hidden' name='action' value='remove'>"
             + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
             + "<button>remove</button></form>"
+            + edit_form
+            + test_form
             + f"<a href='/preview?recipient={self.render_value(item.id)}'>preview</a>"
+            + self._delivery_history(item)
             + "</td></tr>"
         )
+
+    def _delivery_history(self, item: RecipientProfile) -> str:
+        briefing = self._latest_briefing()
+        if briefing is None:
+            return "<small>Latest delivery: no briefing</small>"
+        records = [
+            record
+            for record in self._service().store.list_delivery_records(briefing.run_id)
+            if record.recipient_id == item.id
+        ]
+        if not records:
+            return "<small>Latest delivery: none</small>"
+        entries = "".join(
+            "<li>"
+            + self.render_value(record.delivery_kind.value)
+            + " / "
+            + self.render_value(record.status.value)
+            + "</li>"
+            for record in records[-5:]
+        )
+        return "<ul class='delivery-history'>" + entries + "</ul>"
 
     def _latest_note(self) -> EditorialNote | None:
         briefing = self._latest_briefing()

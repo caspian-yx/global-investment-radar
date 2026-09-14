@@ -64,16 +64,20 @@ Recipient addresses, notes, tokens and credentials must not be committed or
 placed in workflow YAML.
 
 Audience delivery requires both `AUDIENCE_ENABLED=true` and the explicit
-manual/workflow `delivery_target=audience` path. The default/schedule continues
-to use `EMAIL_TO`. Delivery reservation is at-most-once; an existing PENDING
-state is treated as an unknown outcome and is not automatically retried.
+`delivery_target=audience` path. The scheduled `daily.yml` path now selects
+`live + ai + zh-CN + audience`; manual dispatch still defaults to
+`live + no-ai + single` and requires an explicit audience choice. Delivery
+reservation is at-most-once; an existing PENDING state is treated as an
+unknown outcome and is not automatically retried.
 
 ## 4. First cloud run
 
 1. Open the private repository's **Actions** tab.
 2. Select **Daily Radar**.
 3. Select **Run workflow** on the `main` branch.
-4. Keep `data_mode` set to `live`.
+4. For a non-audience smoke test, keep the safe manual defaults. For a
+   deliberate audience test, explicitly select `live`, `ai`, `zh-CN`, and
+   `audience`.
 5. Open the running job and confirm the logs show:
    - safe effective configuration;
    - each provider starting and finishing;
@@ -94,7 +98,12 @@ GitHub scheduled workflows are best effort and may be delayed. The non-zero minu
 
 ## 6. Security and cost controls
 
-- `AI_ENABLED=false`, `DAILY_LLM_BUDGET=0`, and `LLM_PROVIDER=disabled` are fixed in the workflow.
+- Scheduled runs use `AI_ENABLED=true`, `DAILY_LLM_BUDGET=1`,
+  `AI_MAX_REQUESTS_PER_RUN=10`, DeepSeek, and one optional C9.1 localization
+  request. Thus the normal hard maximum is 10 structured explanation calls
+  plus 1 localization call for a briefing identity; persisted localization
+  snapshots reduce later runs to zero new localization calls.
+- Manual defaults remain `AI_ENABLED=false`, localization off, and single delivery.
 - The workflow has read-only repository permissions.
 - Third-party Actions are pinned to full commit SHAs.
 - `.env`, databases, reports, caches, and local work files are ignored.
@@ -104,11 +113,10 @@ GitHub scheduled workflows are best effort and may be delayed. The non-zero minu
 
 ## 7. Required human actions remaining
 
-- Create the private GitHub repository.
-- Authenticate Git locally and push `main`.
-- Create the Gmail App Password or another SMTP credential.
-- Add the six required email Secrets.
-- Optionally create Neon and add `DATABASE_URL`.
-- Run the manual workflow and confirm both the email and artifact.
+- The private repository, Supabase PostgreSQL authority, GitHub secrets, and
+  operator recipient are already configured for this activation.
+- Add beta recipients only through the local Admin described in the repository
+  README; do not edit PostgreSQL or commit audience data.
+- Confirm the first scheduled audience delivery and artifact after activation.
 
 Only after the first manual cloud run succeeds should the scheduled run be considered operational.

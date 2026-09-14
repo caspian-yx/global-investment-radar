@@ -22,7 +22,7 @@ Implemented in this milestone:
 - Deterministic C9 Daily Intelligence product with an immutable briefing snapshot and
   mobile-first editorial email.
 - CLI, tests and GitHub Actions CI/daily workflows.
-- Cloud-MVP preparation: Asia/Shanghai business date, scheduled live/no-AI execution,
+- Cloud-MVP preparation: Asia/Shanghai business date, scheduled live AI execution,
   SMTP delivery, operational logs, failure-preserved artifacts, and optional PostgreSQL.
 
 Not implemented yet: SEC filing body/XBRL/exhibit extraction, licensed global market provider,
@@ -51,14 +51,34 @@ sends mail, and test delivery targets only `OPERATOR_EMAIL`.
 Production fan-out requires both `AUDIENCE_ENABLED=true` and the explicit
 `uv run radar daily --audience` entrypoint. It also requires SMTP configuration
 and a shared durable PostgreSQL `DATABASE_URL`; SQLite is suitable for local
-development/tests only. The GitHub Actions workflow keeps `single` as its
-default delivery target and never starts the admin server.
+development/tests only. Scheduled GitHub Actions runs intentionally select the
+full `live + ai + zh-CN + audience` product; manual dispatch keeps `single` as
+the default and can explicitly select `audience`. The workflow never starts
+the admin server.
 
 Recipient configuration, personal/editorial notes, and delivery records live
 in the shared database and are not stored in Git. Production delivery is
 at-most-once: a previously reserved `PENDING`, `SENT`, `FAILED`, or `SKIPPED`
 identity is not automatically sent again. Removing a recipient archives it so
 historical delivery records remain auditable.
+
+### Operator beta workflow
+
+1. Start the local admin with `uv run radar admin`.
+2. Open `http://127.0.0.1:8765` and authenticate with Basic auth username
+   `operator` plus the local `AUDIENCE_ADMIN_TOKEN`.
+3. Add a recipient with display name and email, choose `english`, `chinese`,
+   or `bilingual`, and save. The locale is derived deterministically from the
+   selected mode (`en` for English, `zh-CN` otherwise).
+4. Use `preview` before delivery, `Send Test To Me` when local SMTP is
+   configured, and the row's latest-delivery status for bounded verification.
+5. Use `disable` for a temporary pause; use `remove` to archive a recipient
+   without deleting delivery history. The Edit form changes the display name,
+   email, mode, or personal note. The Message section edits or clears the
+   current briefing's EditorialNote.
+
+The admin remains loopback-only and never runs in GitHub Actions. Do not put
+recipient data, notes, the database URL, or the admin token in Git.
 
 To validate the optional structured AI path without an API call:
 
@@ -346,8 +366,10 @@ Tests cover the no-AI end-to-end run, same-day idempotency, deterministic dedupl
 
 ## GitHub Actions
 
-`ci.yml` runs static checks and tests. `daily.yml` supports schedule and manual dispatch,
-runs live/no-AI by default, sends email, and uploads the HTML report plus run result.
+`ci.yml` runs static checks and tests. `daily.yml` schedules the full live AI,
+Chinese-localized audience product, while manual dispatch defaults to the safe
+`live + no-ai + single` path and exposes explicit choices for AI, localization,
+and audience delivery. It sends email and uploads the HTML report plus run result.
 It runs at 22:17 UTC (06:17 Asia/Shanghai on the following day); GitHub scheduling is
 best effort and may be delayed. Required email secrets:
 
