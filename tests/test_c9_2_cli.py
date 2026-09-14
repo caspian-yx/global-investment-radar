@@ -60,3 +60,20 @@ def test_preview_command_does_not_construct_or_call_smtp(tmp_path, monkeypatch) 
     preview = runner.invoke(app, ["preview", "--recipient", recipient_id])
     assert preview.exit_code != 0
     assert "SMTP" not in preview.stdout
+
+
+def test_audience_admin_launcher_is_exposed_and_non_secret(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_run_admin(settings) -> None:
+        calls.append(settings.database_url.split(":", 1)[0])
+
+    monkeypatch.setattr("radar.cli.run_admin", fake_run_admin)
+    help_result = CliRunner().invoke(app, ["--help"])
+    launch_result = CliRunner().invoke(app, ["audience-admin"])
+
+    assert help_result.exit_code == 0
+    assert "audience-admin" in help_result.stdout
+    assert launch_result.exit_code == 0
+    assert len(calls) == 1
+    assert "AUDIENCE_ADMIN_TOKEN" not in launch_result.stdout

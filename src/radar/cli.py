@@ -223,6 +223,12 @@ def admin() -> None:
     run_admin(Settings())
 
 
+@app.command("audience-admin")
+def audience_admin() -> None:
+    """Run the loopback-only private-beta operator console."""
+    run_admin(Settings())
+
+
 @app.command()
 def doctor() -> None:
     """Show effective non-secret configuration and whether AI can be called."""

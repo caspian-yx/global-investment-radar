@@ -40,10 +40,11 @@ uv run radar daily --data-mode demo --no-ai
 
 The generated report is written to `outputs/reports/`. Demo records are synthetic and the report displays a prominent `DEMO DATA` banner.
 
-## Private-beta audience delivery (C9.2)
+## Private-beta audience delivery and Admin Console (C9.2/C9.3)
 
-Audience management is operator-only. Run `uv run radar admin` locally with
+Audience management is operator-only. Run `uv run radar audience-admin` locally with
 `AUDIENCE_ADMIN_TOKEN` configured; the server binds only to `127.0.0.1`.
+`uv run radar admin` remains a compatibility alias.
 The CLI and admin use the same service layer (`radar recipients ...`,
 `radar editorial ...`, `radar preview`, and `radar send-test`). Preview never
 sends mail, and test delivery targets only `OPERATOR_EMAIL`.
@@ -64,18 +65,25 @@ historical delivery records remain auditable.
 
 ### Operator beta workflow
 
-1. Start the local admin with `uv run radar admin`.
+1. Start the local console with `uv run radar audience-admin`.
 2. Open `http://127.0.0.1:8765` and authenticate with Basic auth username
    `operator` plus the local `AUDIENCE_ADMIN_TOKEN`.
-3. Add a recipient with display name and email, choose `english`, `chinese`,
-   or `bilingual`, and save. The locale is derived deterministically from the
-   selected mode (`en` for English, `zh-CN` otherwise).
-4. Use `preview` before delivery, `Send Test To Me` when local SMTP is
-   configured, and the row's latest-delivery status for bounded verification.
-5. Use `disable` for a temporary pause; use `remove` to archive a recipient
-   without deleting delivery history. The Edit form changes the display name,
-   email, mode, or personal note. The Message section edits or clears the
-   current briefing's EditorialNote.
+3. Use Dashboard for the latest briefing, localization, audience, delivery,
+   AI/budget, and system status. Use Recipients to add a friend with display
+   name, email, `english`, `chinese`, or `bilingual` mode, and an optional note.
+   New recipients default to bilingual/`zh-CN`/enabled and are not sent mail.
+4. Use Daily Message to edit or clear the current briefing's external
+   EditorialNote. It is escaped, briefing-scoped metadata and never changes
+   Radar intelligence.
+5. Use Preview before delivery. It uses the production renderer and persisted
+   localization snapshot but never calls SMTP or reserves a DeliveryRecord.
+6. Send Test To Me is the only test-send control; it always targets
+   `OPERATOR_EMAIL`, keeps `[TEST]`, and never fans out. Confirm the action.
+7. Use disable for a temporary pause and archive for permanent removal without
+   deleting history. Deliveries shows bounded immutable history; Briefings and
+   System are read-only visibility pages.
+8. Stop the console with Ctrl+C. Production delivery remains controlled by the
+   GitHub Actions workflow; the Admin Console has no production-send button.
 
 The admin remains loopback-only and never runs in GitHub Actions. Do not put
 recipient data, notes, the database URL, or the admin token in Git.

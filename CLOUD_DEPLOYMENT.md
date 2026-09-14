@@ -120,3 +120,24 @@ GitHub scheduled workflows are best effort and may be delayed. The non-zero minu
 - Confirm the first scheduled audience delivery and artifact after activation.
 
 Only after the first manual cloud run succeeds should the scheduled run be considered operational.
+
+## 8. Local Admin Console
+
+Run the operator-only console locally:
+
+~~~bash
+uv run radar audience-admin
+~~~
+
+Open `http://127.0.0.1:8765` and use Basic auth username `operator` with the
+local `AUDIENCE_ADMIN_TOKEN`. The console provides Dashboard, Recipients, Daily
+Message, Preview, Deliveries, Briefings, and System pages. It reuses the shared
+PostgreSQL authority and existing C9.2 service layer; it does not run in
+GitHub Actions, expose a public port, or provide a production-send button.
+
+Use Preview for render-only checks and Send Test To Me only when a test email is
+necessary. The latter is fixed to `OPERATOR_EMAIL`, retains `[TEST]`, and does
+not consume a production DeliveryRecord identity. Creating or editing a
+recipient never sends mail; active recipients join the next scheduled audience
+run. Disable or archive recipients instead of deleting them so delivery history
+remains auditable.

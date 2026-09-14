@@ -125,7 +125,14 @@ class AudienceService:
             return item
         except AudienceValidationError:
             raise
-        except (ValueError, TypeError) as exc:
+        except ValueError as exc:
+            message = (
+                "recipient email already exists"
+                if str(exc) == "recipient email already exists"
+                else "invalid recipient input"
+            )
+            raise AudienceValidationError(message) from exc
+        except TypeError as exc:
             raise AudienceValidationError("invalid recipient input") from exc
 
     def edit_recipient(
@@ -160,7 +167,14 @@ class AudienceService:
             )
             self.store.save_recipient(updated)
             return updated
-        except (ValueError, TypeError) as exc:
+        except ValueError as exc:
+            message = (
+                "recipient email already exists"
+                if str(exc) == "recipient email already exists"
+                else "invalid recipient input"
+            )
+            raise AudienceValidationError(message) from exc
+        except TypeError as exc:
             raise AudienceValidationError("invalid recipient input") from exc
 
     def set_enabled(self, recipient_id: str, enabled: bool) -> RecipientProfile:

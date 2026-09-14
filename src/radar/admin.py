@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
 import base64
@@ -5,11 +6,28 @@ import binascii
 import hmac
 import html
 import logging
+import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
-from radar.audience import DeliveryMode, EditorialNote, RecipientProfile
+from radar.admin_console import (
+    DeliveryFilters,
+    OperatorConsoleService,
+    render_briefings_page,
+    render_dashboard_page,
+    render_deliveries_page,
+    render_layout,
+    render_preview_page,
+    render_system_page,
+)
+from radar.audience import (
+    DeliveryKind,
+    DeliveryMode,
+    DeliveryStatus,
+    EditorialNote,
+    RecipientProfile,
+)
 from radar.briefing import DailyIntelligenceBrief
 from radar.config import Settings
 from radar.delivery import AudienceService, AudienceValidationError
@@ -26,7 +44,9 @@ def authorization_header(username: str, token: str) -> str:
 
 class AudienceAdminHandler(BaseHTTPRequestHandler):
     service: AudienceService | None = None
+    console_service: OperatorConsoleService | None = None
     admin_token: str | None = None
+    csrf_token: str | None = None
 
     @staticmethod
     def render_value(value: str) -> str:
@@ -55,6 +75,19 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             raise RuntimeError("admin service is not configured")
         return service
 
+    def _console(self) -> OperatorConsoleService:
+        service = self._service()
+        return OperatorConsoleService(service.store, service.settings)
+
+    @classmethod
+    def is_csrf_valid(cls, supplied: str | None, expected: str | None) -> bool:
+        return (
+            supplied is not None
+            and expected is not None
+            and bool(supplied)
+            and hmac.compare_digest(supplied, expected)
+        )
+
     def _reply(
         self, status: int, body: str, *, content_type: str = "text/html; charset=utf-8"
     ) -> None:
@@ -62,6 +95,13 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:;",
+        )
         self.end_headers()
         self.wfile.write(payload)
 
@@ -82,10 +122,39 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
                 briefing = self._latest_briefing()
                 if briefing is None:
                     raise AudienceValidationError("no canonical briefing is available")
-                self._reply(200, self._service().preview(briefing, recipient_id).html)
+                self._reply(
+                    200,
+                    self._service().preview(briefing, recipient_id).html,
+                    content_type="text/html; charset=utf-8",
+                )
                 return
-            self._reply(200, self._index())
+            query = parse_qs(parsed.query)
+            page = query.get("page", ["dashboard"])[0]
+            if page == "dashboard":
+                body = render_dashboard_page(self._console(), self._csrf())
+            elif page == "recipients":
+                body = render_layout("recipients", "Recipients", self._index(), self._csrf())
+            elif page == "daily-message":
+                body = render_layout(
+                    "daily-message", "Daily Message", self._daily_message_page(), self._csrf()
+                )
+            elif page == "preview":
+                body = render_preview_page(self._console(), self._csrf())
+            elif page == "deliveries":
+                body = render_deliveries_page(
+                    self._console(), self._csrf(), self._delivery_filters(query)
+                )
+            elif page == "briefings":
+                body = render_briefings_page(self._console(), self._csrf())
+            elif page == "system":
+                body = render_system_page(self._console(), self._csrf())
+            else:
+                self._reply(404, "Page not found.")
+                return
+            self._reply(200, body)
         except AudienceValidationError:
+            self._reply(400, "Request could not be completed.")
+        except (TypeError, ValueError):
             self._reply(400, "Request could not be completed.")
 
     def do_POST(self) -> None:  # noqa: N802
@@ -98,6 +167,9 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         fields = {key: values[0] for key, values in parse_qs(body, keep_blank_values=True).items()}
+        if not self.is_csrf_valid(fields.get("csrf_token"), self._csrf()):
+            self._reply(403, "Request could not be completed.")
+            return
         try:
             self._mutate(fields)
             self._reply(200, "OK")
@@ -148,41 +220,48 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
 
     def _index(self) -> str:
         service = self._service()
-        recipients = service.list_recipients()
+        recipients = service.store.list_recipients(include_archived=True)
         rows = "".join(self._recipient_row(item) for item in recipients)
         note = self._latest_note()
         note_value = self.render_value(note.message if note is not None else "")
+        csrf = self._csrf()
         add_form = (
             "<form method='post'><input type='hidden' name='action' value='add'>"
+            f"<input type='hidden' name='csrf_token' value='{self.render_value(csrf)}'>"
             "<input name='display_name' placeholder='Display name' required>"
             "<input name='email' type='email' placeholder='Email' required>"
-            "<select name='mode'><option>english</option><option>chinese</option>"
-            "<option>bilingual</option></select><textarea name='note' maxlength='2000'></textarea>"
+            "<select name='mode'><option value='english'>english</option>"
+            "<option value='chinese'>chinese</option><option value='bilingual' selected>bilingual</option></select>"
+            "<small class='muted'>Locale follows mode: en for English, zh-CN otherwise.</small>"
+            "<textarea name='note' maxlength='2000' placeholder='Optional personal note'></textarea>"
             "<button>Add recipient</button></form>"
         )
         message_form = (
             "<form method='post'><input type='hidden' name='action' value='editorial_save'>"
+            f"<input type='hidden' name='csrf_token' value='{self.render_value(csrf)}'>"
             f"<textarea name='message' maxlength='2000'>{note_value}</textarea>"
             "<button>Save editorial note</button></form>"
             "<form method='post'><input type='hidden' name='action' value='editorial_clear'>"
+            f"<input type='hidden' name='csrf_token' value='{self.render_value(csrf)}'>"
             "<button>Clear editorial note</button></form>"
         )
+        active_count = sum(item.enabled and not item.archived for item in recipients)
         delivery = (
-            f"<p>Active recipients: {len(recipients)} / "
-            f"{service.settings.max_active_recipients}</p>"
+            f"<p>Active recipients: {active_count} / {service.settings.max_active_recipients}</p>"
         )
         return (
-            "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
-            "<title>Radar Admin</title></head><body><h1>Audience</h1>" + add_form + "<table>"
-            "<tr><th>Name</th><th>Email</th><th>Mode</th><th>Status</th>"
-            "<th>Locale</th><th>Actions / latest delivery</th></tr>"
+            "<div class='panel'><h2>Recipients</h2><p class='muted'>Manage private-beta audience profiles. "
+            "Creation never sends automatically.</p>" + add_form + "<table>"
+            "<tr><th>Name</th><th>Email</th><th>Mode</th><th>State</th>"
+            "<th>Locale</th><th>Note</th><th>Status</th><th>Updated</th>"
+            "<th>Actions / latest delivery</th></tr>"
             + rows
-            + "</table><h2>Message</h2>"
+            + "</table></div><div class='panel'><h2>Daily Message</h2>"
             + message_form
-            + "<h2>Delivery</h2>"
+            + "</div><div class='panel'><h2>Audience safety</h2>"
             + delivery
-            + "<p>Preview and operator test delivery are available per recipient.</p>"
-            "</body></html>"
+            + "<p>Production delivery remains workflow-controlled. Preview and operator test delivery "
+            "are available per recipient.</p></div>"
         )
 
     def _recipient_row(self, item: RecipientProfile) -> str:
@@ -198,6 +277,7 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
         edit_form = (
             "<details><summary>Edit</summary>"
             "<form method='post'><input type='hidden' name='action' value='edit'>"
+            f"<input type='hidden' name='csrf_token' value='{self.render_value(self._csrf())}'>"
             + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
             + f"<input name='display_name' value='{self.render_value(item.display_name)}' required>"
             + f"<input name='email' type='email' value='{self.render_value(item.email)}' required>"
@@ -209,9 +289,31 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             + "<button>Save recipient</button></form></details>"
         )
         test_form = (
-            "<form method='post'><input type='hidden' name='action' value='send_test'>"
+            "<form method='post' onsubmit=\"return confirm('Send a test to the operator only?')\">"
+            "<input type='hidden' name='action' value='send_test'>"
+            f"<input type='hidden' name='csrf_token' value='{self.render_value(self._csrf())}'>"
             + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
             + "<button>Send Test To Me</button></form>"
+        )
+        toggle_form = (
+            "<span class='badge'>archived</span>"
+            if item.archived
+            else (
+                "<form method='post' onsubmit=\"return confirm('Change this recipient status?')\">"
+                f"<input type='hidden' name='action' value='{action}'>"
+                f"<input type='hidden' name='csrf_token' value='{self.render_value(self._csrf())}'>"
+                f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
+                f"<button class='secondary'>{action}</button></form>"
+            )
+        )
+        archive_form = (
+            "<form method='post' onsubmit=\"return confirm('Archive this recipient?')\">"
+            "<input type='hidden' name='action' value='remove'>"
+            f"<input type='hidden' name='csrf_token' value='{self.render_value(self._csrf())}'>"
+            f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
+            "<button class='danger'>archive</button></form>"
+            if not item.archived
+            else ""
         )
         return (
             "<tr><td>"
@@ -221,16 +323,16 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             + "</td><td>"
             + self.render_value(item.delivery_mode.value)
             + "</td><td>"
-            + ("enabled" if item.enabled else "disabled")
-            + "</td><td>"
             + self.render_value(item.locale)
             + "</td><td>"
-            + f"<form method='post'><input type='hidden' name='action' value='{action}'>"
-            + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
-            + f"<button>{action}</button></form>"
-            + "<form method='post'><input type='hidden' name='action' value='remove'>"
-            + f"<input type='hidden' name='recipient_id' value='{self.render_value(item.id)}'>"
-            + "<button>remove</button></form>"
+            + ("yes" if item.personal_note else "no")
+            + "</td><td>"
+            + ("archived" if item.archived else ("enabled" if item.enabled else "disabled"))
+            + "</td><td>"
+            + self.render_value(item.updated_at.isoformat())
+            + "</td><td>"
+            + toggle_form
+            + archive_form
             + edit_form
             + test_form
             + f"<a href='/preview?recipient={self.render_value(item.id)}'>preview</a>"
@@ -258,6 +360,54 @@ class AudienceAdminHandler(BaseHTTPRequestHandler):
             for record in records[-5:]
         )
         return "<ul class='delivery-history'>" + entries + "</ul>"
+
+    def _csrf(self) -> str:
+        return type(self).csrf_token or ""
+
+    def _delivery_filters(self, query: dict[str, list[str]]) -> DeliveryFilters:
+        values: dict[str, object] = {}
+        kind = query.get("kind", [""])[0]
+        status = query.get("status", [""])[0]
+        mode = query.get("mode", [""])[0]
+        requested_date = query.get("date", [""])[0]
+        if kind:
+            values["kind"] = DeliveryKind(kind)
+        if status:
+            values["status"] = DeliveryStatus(status)
+        if mode:
+            values["delivery_mode"] = DeliveryMode(mode)
+        if requested_date:
+            values["date"] = requested_date
+        return DeliveryFilters.model_validate(values)
+
+    def _daily_message_page(self) -> str:
+        briefing = self._latest_briefing()
+        if briefing is None:
+            return (
+                "<div class='panel'><h2>Daily Message</h2>"
+                "<div class='empty'>No canonical briefing is available.</div></div>"
+            )
+        note = self._latest_note()
+        message = self.render_value(note.message if note is not None else "")
+        csrf = self.render_value(self._csrf())
+        body = (
+            "<div class='panel'><h2>Editorial note</h2>"
+            f"<p class='muted'>Applies to briefing {self.render_value(briefing.id)} "
+            f"from run {self.render_value(briefing.run_id)} · {self.render_value(briefing.report_date)}</p>"
+            "<p>External delivery metadata only; it does not modify Radar intelligence.</p>"
+            "<form method='post' class='stack'><input type='hidden' name='action' value='editorial_save'>"
+            f"<input type='hidden' name='csrf_token' value='{csrf}'>"
+            f"<textarea name='message' maxlength='2000' placeholder='Optional note'>{message}</textarea>"
+            "<button>Save note</button></form>"
+            "<form method='post'><input type='hidden' name='action' value='editorial_clear'>"
+            f"<input type='hidden' name='csrf_token' value='{csrf}'><button class='secondary'>Clear note</button></form>"
+            "</div>"
+        )
+        return (
+            "<div class='panel'><h2>Current briefing</h2>"
+            f"<p>{self.render_value(briefing.view_name)} · {self.render_value(briefing.report_date)} · "
+            f"Primary {len(briefing.primary_stories)}</p></div>" + body
+        )
 
     def _latest_note(self) -> EditorialNote | None:
         briefing = self._latest_briefing()
@@ -293,7 +443,20 @@ def run_admin(settings: Settings) -> None:
     store = RadarStore(settings.database_url)
     store.initialize()
     AudienceAdminHandler.service = AudienceService(store, settings)
+    AudienceAdminHandler.console_service = OperatorConsoleService(store, settings)
     AudienceAdminHandler.admin_token = token.get_secret_value()
+    AudienceAdminHandler.csrf_token = secrets.token_urlsafe(32)
     server = ThreadingHTTPServer(("127.0.0.1", settings.admin_port), AudienceAdminHandler)
-    logger.info("audience admin listening on loopback port=%s", settings.admin_port)
+    print(
+        "Admin Console:\n"
+        f"http://127.0.0.1:{settings.admin_port}\n"
+        f"Database backend: {settings.database_url.split(':', 1)[0]}\n"
+        "Authentication: required",
+        flush=True,
+    )
+    logger.info(
+        "audience admin ready url=http://127.0.0.1:%s backend=%s auth=required",
+        settings.admin_port,
+        settings.database_url.split(":", 1)[0],
+    )
     server.serve_forever()
