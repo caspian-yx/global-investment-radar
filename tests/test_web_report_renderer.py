@@ -12,6 +12,7 @@ from radar.report import (
     WebHtmlReportRenderer,
     report_context,
 )
+from radar.web_intelligence import ChinaSectorObservation
 
 
 def _context() -> dict[str, object]:
@@ -21,7 +22,7 @@ def _context() -> dict[str, object]:
         is_demo=False,
         ai_test_data=False,
         data_mode="live",
-        markets=(_market("^VIX", "VIX", 4.0, history=(1, 2, 3, 4, 5, 6, 7)),),
+        markets=(_market("^VIX", "VIX", 4.0, history=(1, 2, 3, 4, 5, 6, 7, 8)),),
     )
 
 
@@ -38,6 +39,42 @@ def test_web_and_email_renderers_have_separate_presentation_contracts() -> None:
     assert "display:grid" not in email
     assert "backdrop-filter" not in email
     assert "<script" not in email.casefold()
+
+
+def test_china_indices_render_even_when_sector_coverage_is_unavailable() -> None:
+    briefing, _ = _compose()
+    html = WebHtmlReportRenderer().render(
+        report_context(
+            briefing=briefing,
+            is_demo=False,
+            ai_test_data=False,
+            data_mode="live",
+            markets=(_market("^HSI", "Hang Seng", 1.2),),
+        )
+    )
+
+    china = html.split('id="china-a-shares"', 1)[1].split('id="cross-asset"', 1)[0]
+    assert "Hang Seng" in china
+    assert "Sector ranking appears only when structured sector observations are available." in china
+
+
+def test_web_renderer_honors_major_visual_budget_for_risk_and_china_visuals() -> None:
+    briefing, _ = _compose()
+    sectors = (ChinaSectorObservation(sector="通信", change_1d=4.57),)
+    markets = (_market("^VIX", "VIX", 4.0, history=tuple(range(1, 9))),)
+    html = WebHtmlReportRenderer().render(
+        report_context(
+            briefing=briefing,
+            is_demo=False,
+            ai_test_data=False,
+            data_mode="live",
+            markets=markets,
+            china_sectors=sectors,
+        )
+    )
+
+    assert "Visual budget 2 / 2" in html
+    assert html.count("<svg") <= 1
 
 
 def test_web_renderer_preserves_real_briefing_content() -> None:

@@ -198,6 +198,14 @@ def test_missing_or_unknown_asset_class_fails_explicitly(asset: dict[str, str]) 
         extract_market_events([observation("TEST", 20.0)], [asset], NOW)
 
 
+def test_rate_asset_class_is_supported_for_treasury_market_series() -> None:
+    assets = [{"symbol": "^TNX", "name": "US 10Y Treasury Yield", "asset_class": "RATE"}]
+
+    events = extract_market_events([observation("^TNX", 2.0)], assets, NOW)[0]
+
+    assert events
+
+
 def test_observation_without_universe_metadata_is_skipped_with_diagnostic(caplog) -> None:
     result = extract_market_events([observation("UNCONFIGURED", 20.0)], [], NOW)
 

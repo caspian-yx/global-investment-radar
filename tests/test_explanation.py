@@ -271,7 +271,7 @@ def test_identical_evidence_is_reused_but_conflicting_payload_is_rejected() -> N
         unique_by_id([item, item.model_copy(update={"excerpt": "different"})])
 
 
-def test_all_17_assets_have_cautious_session_and_topic_metadata() -> None:
+def test_all_20_assets_have_cautious_session_and_topic_metadata() -> None:
     assets = load_universe(Settings())["assets"]
     actual = {
         item["symbol"]: (
@@ -304,6 +304,9 @@ def test_all_17_assets_have_cautious_session_and_topic_metadata() -> None:
         ),
         "^RUT": ("EXCHANGE", "America/New_York", "16:00", ("RATES", "EMPLOYMENT", "US")),
         "^VIX": ("EXCHANGE", "America/New_York", "16:00", ("RATES", "REGULATION", "US")),
+        "^VXN": ("EXCHANGE", "America/New_York", "16:00", ("RATES", "TECHNOLOGY", "US")),
+        "^UST2Y": ("EXCHANGE", "America/New_York", "16:00", ("RATES", "US")),
+        "^TNX": ("EXCHANGE", "America/New_York", "16:00", ("RATES", "INFLATION", "US")),
         "^HSI": ("EXCHANGE", "Asia/Hong_Kong", "16:00", ("CHINA", "TECHNOLOGY", "REGULATION")),
         "3033.HK": ("EXCHANGE", "Asia/Hong_Kong", "16:00", ("CHINA", "TECHNOLOGY", "REGULATION")),
         "000001.SS": ("EXCHANGE", "Asia/Shanghai", "15:00", ("CHINA", "RATES", "REGULATION")),

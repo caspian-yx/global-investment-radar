@@ -65,6 +65,7 @@ class AssociationConfidence(StrEnum):
 class ReactionProfile(StrEnum):
     EQUITY_INDEX = "EQUITY_INDEX"
     EQUITY_ETF_PROXY = "EQUITY_ETF_PROXY"
+    RATE = "RATE"
     FX = "FX"
     COMMODITY = "COMMODITY"
     CRYPTO = "CRYPTO"
@@ -339,6 +340,7 @@ class C8EvaluationResult(BaseModel):
 _MAGNITUDE_THRESHOLDS: dict[ReactionProfile, tuple[float, float, float, float]] = {
     ReactionProfile.EQUITY_INDEX: (0.10, 0.75, 1.50, 3.00),
     ReactionProfile.EQUITY_ETF_PROXY: (0.10, 0.75, 1.50, 3.00),
+    ReactionProfile.RATE: (0.10, 0.75, 1.50, 3.00),
     ReactionProfile.FX: (0.05, 0.30, 0.75, 1.50),
     ReactionProfile.COMMODITY: (0.10, 0.75, 1.50, 3.00),
     ReactionProfile.CRYPTO: (0.25, 1.50, 3.00, 6.00),

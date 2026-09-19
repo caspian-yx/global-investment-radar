@@ -160,4 +160,3 @@
 - [ ] **Step 4: Run `ruff check .`, `mypy --strict src/radar`, `git diff --check`, and the repository lock/dependency validation command available in this checkout; record exact exit status and output.
 - [ ] **Step 5: Generate a representative HTML report, inspect the Web artifact and email fallback, verify no Admin Console files changed, verify no canonical snapshot mutation during localization/rendering, and verify the final diff.
 - [ ] **Step 6: Complete the final engineering report with baseline, C7.1–C7.13 mapping, root causes, final intelligence pipeline, safety guarantees, golden results, visual system, quality gates, git/worktree status, and explicit remaining limitations.
-

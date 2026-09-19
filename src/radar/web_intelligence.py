@@ -109,6 +109,18 @@ class ChinaSectorObservation:
     activity: float | None = None
     style: str | None = None
     taxonomy: str = "SW1"
+    provider: str = "validated-sector-feed"
+    source_document_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.sector.strip():
+            raise ValueError("sector must not be blank")
+        if not self.provider.strip():
+            raise ValueError("provider must not be blank")
+        if not self.taxonomy.strip():
+            raise ValueError("taxonomy must not be blank")
+        if any(not item.strip() for item in self.source_document_ids):
+            raise ValueError("source_document_ids must not contain blank values")
 
 
 @dataclass(frozen=True)
@@ -134,6 +146,7 @@ class MultiDayContext:
 
 @dataclass(frozen=True)
 class NextItem:
+    event_id: str
     title: str
     text: str
     confirmation: str
@@ -172,6 +185,9 @@ class WebReportModel:
     next_horizons: NextHorizons = field(default_factory=lambda: NextHorizons((), ()))
     sparkline_points: dict[str, str] = field(default_factory=dict)
     major_visuals: tuple[ChartEligibility, ...] = ()
+    risk_pulse_visual_enabled: bool = False
+    china_sectors_visual_enabled: bool = False
+    exceptional_move_visual_enabled: bool = False
     story_explanations: dict[str, str] = field(default_factory=dict)
     decayed_stories: tuple[BriefingStoryCard, ...] = ()
 
@@ -297,6 +313,21 @@ def _coverage_gaps(
                 "VOLATILITY_COVERAGE_GAP", vix.symbol, "VIX is present without VXN context."
             )
         )
+    required = (
+        ("MISSING_VIX", "^VIX", "VIX risk series is unavailable."),
+        ("MISSING_VXN", "^VXN", "VXN risk series is unavailable."),
+        ("MISSING_US2Y", "US2Y", "US 2Y Treasury yield series is unavailable."),
+        ("MISSING_US10Y", "US10Y", "US 10Y Treasury yield series is unavailable."),
+        ("MISSING_WTI", "CL=F", "WTI crude series is unavailable."),
+    )
+    for code, symbol, reason in required:
+        aliases: tuple[str, ...] = (symbol,)
+        if symbol == "US2Y":
+            aliases = ("US2Y", "^UST2Y", "2Y")
+        elif symbol == "US10Y":
+            aliases = ("US10Y", "^TNX", "10Y")
+        if _find_market(lookup, *aliases) is None:
+            gaps.append(CoverageGap(code, symbol, reason))
     return tuple(gaps)
 
 
@@ -350,7 +381,9 @@ def _cross_asset_signals(
 
 
 def _regime(
-    markets: tuple[MarketObservation, ...], signals: tuple[CrossAssetSignal, ...]
+    markets: tuple[MarketObservation, ...],
+    signals: tuple[CrossAssetSignal, ...],
+    config: AbnormalMoveConfig,
 ) -> MarketRegime:
     lookup = _market_lookup(markets)
     vix = _find_market(lookup, "^VIX", "VIX")
@@ -361,9 +394,9 @@ def _regime(
     cautious = (
         bool(equity_moves and sum(equity_moves) < 0) or vix is not None and vix.change_pct > 0
     )
-    rates_led = ten_year is not None or any(
-        item.code == "INFLATION_PRESSURE_CANDIDATE" for item in signals
-    )
+    rates_led = (
+        ten_year is not None and abs(ten_year.change_pct) >= config.relative_strength_pct / 10
+    ) or any(item.code == "INFLATION_PRESSURE_CANDIDATE" for item in signals)
     panic = vix is not None and vix.change_pct >= 10
     if cautious and rates_led and not panic:
         label = "CAUTIOUS · RATES-LED · NOT PANIC"
@@ -420,6 +453,7 @@ def _multi_day(markets: tuple[MarketObservation, ...]) -> tuple[MultiDayContext,
 def _next_horizons(briefing: DailyIntelligenceBrief) -> NextHorizons:
     next_24_hours = tuple(
         NextItem(
+            event_id=item.event_id,
             title=item.headline,
             text=item.text,
             confirmation="Further official or company evidence clarifies or extends the item.",
@@ -456,7 +490,7 @@ def build_sparkline_points(
 ) -> str:
     # Providers may retain a longer rolling window; the Web contract is explicitly 7 days.
     ordered = tuple(reversed(tuple(history)[:8]))
-    if len(ordered) < 2:
+    if len(ordered) < 8:
         return ""
     values = [item.close for item in ordered]
     low = min(values)
@@ -479,7 +513,8 @@ def select_major_visuals(
     risk_keys = tuple(
         item.symbol
         for item in intelligence.market_observations
-        if item.symbol in {"^VIX", "^VXN", "US10Y", "CL=F"} and len(item.history) >= 2
+        if item.symbol in {"^VIX", "^VXN", "US10Y", "^TNX", "CL=F"}
+        and len(item.history) >= 8
     )
     candidates: list[ChartEligibility] = []
     if risk_keys:
@@ -545,16 +580,24 @@ def build_web_intelligence(
         abnormal_moves=abnormal_moves,
         coverage_gaps=gaps,
         cross_asset_signals=signals,
-        regime=_regime(market_items, signals),
+        regime=_regime(market_items, signals, abnormal_config),
         china=_china_intelligence(market_items, sector_items),
         multi_day=_multi_day(market_items),
         next_horizons=_next_horizons(briefing),
         sparkline_points={
             item.symbol: build_sparkline_points(item.history)
             for item in market_items
-            if item.symbol in {"^VIX", "^VXN", "US10Y", "CL=F"}
+            if item.symbol in {"^VIX", "^VXN", "US10Y", "^TNX", "CL=F"}
         },
         story_explanations=_story_explanations(briefing),
         decayed_stories=decayed_stories,
     )
-    return replace(intelligence, major_visuals=select_major_visuals(intelligence))
+    major_visuals = select_major_visuals(intelligence)
+    visual_kinds = {item.kind for item in major_visuals if item.eligible}
+    return replace(
+        intelligence,
+        major_visuals=major_visuals,
+        risk_pulse_visual_enabled=ChartKind.RISK_PULSE in visual_kinds,
+        china_sectors_visual_enabled=ChartKind.CHINA_SECTORS in visual_kinds,
+        exceptional_move_visual_enabled=ChartKind.EXCEPTIONAL_MOVE in visual_kinds,
+    )

@@ -88,6 +88,22 @@ def report_context(
     localized_market_names = (
         {item.key: item.text for item in localized.market_names} if localized is not None else {}
     )
+    localized_primary_stories = (
+        {
+            item.key.removeprefix("story:"): item
+            for item in localized.primary_stories
+        }
+        if localized is not None
+        else {}
+    )
+    localized_watch_items = (
+        {
+            item.key.removeprefix("watch:"): item
+            for item in localized.watch_today
+        }
+        if localized is not None
+        else {}
+    )
     localized_primary = localized is not None and (
         composition is None or composition.delivery_mode is not DeliveryMode.ENGLISH
     )
@@ -115,6 +131,8 @@ def report_context(
         "data_mode": data_mode,
         "localized": localized,
         "localized_market_names": localized_market_names,
+        "localized_primary_stories": localized_primary_stories,
+        "localized_watch_items": localized_watch_items,
         "localization_labels": C91_LABELS,
         "localized_primary": localized_primary,
         "include_english_reference": include_english_reference,

@@ -45,6 +45,7 @@ def test_sparkline_points_are_real_svg_coordinates_without_unicode_blocks() -> N
 
     assert history == ()
     assert build_sparkline_points(()) == ""
+    assert build_sparkline_points(_market("^VIX", "VIX", 4.0, history=(1, 2, 3)).history) == ""
 
 
 def test_sparkline_points_use_the_latest_seven_day_window() -> None:
@@ -53,3 +54,14 @@ def test_sparkline_points_use_the_latest_seven_day_window() -> None:
     points = build_sparkline_points(market.history)
 
     assert len(points.split()) == 8
+
+
+def test_major_visual_eligibility_requires_a_complete_seven_day_series() -> None:
+    briefing, _ = _compose(report_date="2026-09-17")
+    short_history = build_web_intelligence(
+        briefing,
+        markets=(_market("^VIX", "VIX", 4.0, history=(1, 2, 3)),),
+        report_date="2026-09-17",
+    )
+
+    assert not any(item.kind.value == "RISK_PULSE" for item in short_history.major_visuals)

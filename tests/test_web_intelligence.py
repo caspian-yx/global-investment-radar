@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from test_briefing_composition import _compose
 
 from radar.domain import MarketHistoryPoint, MarketObservation
@@ -29,7 +30,15 @@ def _market(
         id=f"market-{symbol}",
         symbol=symbol,
         name=name,
-        region="US" if symbol.startswith("^") or symbol in {"US2Y", "US10Y"} else "Commodity",
+        region=(
+            "HK"
+            if symbol == "^HSI"
+            else "CN"
+            if symbol in {"000001.SS", "510300.SS"}
+            else "US"
+            if symbol.startswith("^") or symbol in {"US2Y", "US10Y"}
+            else "Commodity"
+        ),
         observed_at=observed,
         close=100 + change,
         previous_close=100,
@@ -97,6 +106,30 @@ def test_web_intelligence_detects_cross_asset_signals_and_regime() -> None:
     assert intelligence.regime.label == "CAUTIOUS · RATES-LED · NOT PANIC"
 
 
+def test_regime_is_not_rates_led_without_a_material_yield_move() -> None:
+    briefing, _ = _compose(report_date="2026-09-17")
+    markets = (
+        _market("^VIX", "VIX", 5.0),
+        _market("US10Y", "US 10Y Treasury Yield", 0.0),
+    )
+
+    intelligence = build_web_intelligence(briefing, markets=markets, report_date="2026-09-17")
+
+    assert intelligence.regime.label == "CAUTIOUS · MIXED DRIVERS · NOT PANIC"
+
+
+def test_coverage_gaps_identify_missing_required_risk_series() -> None:
+    briefing, _ = _compose(report_date="2026-09-17")
+    intelligence = build_web_intelligence(
+        briefing,
+        markets=(_market("^VIX", "VIX", 1.0),),
+        report_date="2026-09-17",
+    )
+
+    codes = {item.code for item in intelligence.coverage_gaps}
+    assert {"MISSING_VXN", "MISSING_US2Y", "MISSING_US10Y", "MISSING_WTI"} <= codes
+
+
 def test_china_sectors_are_ranked_and_leadership_is_deterministic() -> None:
     briefing, _ = _compose(report_date="2026-09-17")
     sectors = (
@@ -111,6 +144,23 @@ def test_china_sectors_are_ranked_and_leadership_is_deterministic() -> None:
     assert intelligence.china.breadth == (2, 1)
     assert intelligence.china.leadership == "Technology / Growth"
     assert intelligence.china.available is True
+
+
+def test_china_sector_observations_require_provider_provenance() -> None:
+    observation = ChinaSectorObservation(
+        sector="通信",
+        change_1d=4.57,
+        provider="validated-sector-feed",
+        source_document_ids=("source-1",),
+    )
+
+    assert observation.provider == "validated-sector-feed"
+    assert observation.source_document_ids == ("source-1",)
+
+
+def test_china_sector_observations_reject_blank_provider() -> None:
+    with pytest.raises(ValueError, match="provider"):
+        ChinaSectorObservation(sector="通信", change_1d=4.57, provider=" ")
 
 
 def test_multi_day_context_uses_real_market_history() -> None:

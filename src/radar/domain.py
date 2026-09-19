@@ -102,6 +102,7 @@ class DriverConfidence(StrEnum):
 class AssetClass(StrEnum):
     EQUITY_INDEX = "EQUITY_INDEX"
     EQUITY_ETF_PROXY = "EQUITY_ETF_PROXY"
+    RATE = "RATE"
     FX = "FX"
     COMMODITY = "COMMODITY"
     CRYPTO = "CRYPTO"
