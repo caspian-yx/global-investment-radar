@@ -263,10 +263,16 @@ same identity fails closed. Different runs, views and rules coexist. Because the
 pipeline intentionally reuses one run identity for same-day retries, a retry reuses the already
 persisted C9 snapshot instead of rewriting history.
 
-The HTML template is a thin rendering layer over that snapshot. It uses a fluid 680px presentation
-table, inline email-safe styling and no JavaScript, external CSS or client-side ranking. The market
-adapter is still daily-bar only, C8 associations are not causal claims, and the product is not
-investment advice.
+The presentation layer is split by channel. The saved daily report uses the deterministic
+`WebReportModel` projection and `templates/daily_web.html.j2`: a responsive Liquid Glass surface
+with reusable Market Regime, Global Market Strip, China / A-Shares, Volatility & Rates, Overnight
+Intelligence, Cross-Asset Intelligence, Watch Today, What Matters Next, Secondary Developments and
+Sources / Data Quality components. It may use SVG sparklines and progressive enhancement, but it
+does not select, rank or rewrite canonical intelligence; major visuals are capped at two and stale
+stories are demoted only in the presentation projection. Email continues to use
+`templates/daily_email.html.j2` with email-safe styling and no JavaScript or advanced Web CSS.
+The market adapter is still daily-bar only, C8 associations are not causal claims, and the product
+is not investment advice. The Admin Console is outside this Web-report migration.
 
 ### C9.1 Chinese localization
 

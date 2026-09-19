@@ -127,11 +127,11 @@ def test_no_ai_demo_pipeline_generates_html(tmp_path, monkeypatch) -> None:
     assert result.report_path == str(report)
     assert result.ai_status == "disabled"
     assert result.documents == 5
-    assert result.events == 5
+    assert result.events == 8
     assert result.official_events == 4
-    assert result.market_events == 1
+    assert result.market_events == 4
     assert result.macro_events == 0
-    assert result.markets == 8
+    assert result.markets == 11
     assert result.macro == 3
     assert result.quality_status is ReportQualityStatus.HEALTHY
     html = report.read_text(encoding="utf-8")
@@ -170,7 +170,7 @@ def test_pipeline_uses_one_unified_provider_collection_seam(tmp_path, monkeypatc
 
     assert seam_calls == 1
     assert result.documents == 5
-    assert result.markets == 8
+    assert result.markets == 11
     assert result.macro == 3
 
 
@@ -253,7 +253,7 @@ def test_pipeline_is_idempotent_for_same_business_day(tmp_path) -> None:
     store = RadarStore(settings.database_url)
     assert store.table_count(runs) == 1
     assert store.table_count(source_documents) == 5
-    assert store.table_count(events_table) == 5
+    assert store.table_count(events_table) == 8
     assert store.table_count(reports_table) == 1
 
 
@@ -529,7 +529,7 @@ def test_provider_failure_remains_isolated(tmp_path, monkeypatch) -> None:
 
     result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
-    assert result.events == 5
+    assert result.events == 8
     assert result.quality_status is ReportQualityStatus.DEGRADED
     assert result.provider_statuses[0].status is ProviderStatus.FAILED
     assert result.provider_statuses[0].error_type == "OSError"
@@ -582,7 +582,7 @@ def test_no_official_items_does_not_make_supported_report_insufficient(
     result = run_daily(settings, now=now)
 
     assert result.quality_status is ReportQualityStatus.HEALTHY
-    assert result.market_events == 1
+    assert result.market_events == 4
     assert result.official_events == 0
     assert result.macro_events == 0
     assert result.driver_candidates == 0
@@ -1069,11 +1069,11 @@ def test_llm_failure_cannot_change_deterministic_events(tmp_path, monkeypatch) -
 
     result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
-    assert result.events == 5
+    assert result.events == 8
     assert result.official_events == 4
-    assert result.market_events == 1
+    assert result.market_events == 4
     assert result.macro_events == 0
-    assert RadarStore(settings.database_url).table_count(events_table) == 5
+    assert RadarStore(settings.database_url).table_count(events_table) == 8
     assert any(status.provider == "llm:failing-llm" for status in result.provider_statuses)
 
 
@@ -1406,8 +1406,9 @@ def test_deterministic_events_are_available_before_optional_llm(tmp_path, monkey
 
     result = run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
-    assert len(seen_event_ids) == result.events == 5
-    assert len(set(seen_event_ids)) == result.events
+    assert len(seen_event_ids) == 6
+    assert result.events == 8
+    assert len(set(seen_event_ids)) == len(seen_event_ids)
 
 
 def test_llm_receives_isolated_copies_of_deterministic_artifacts(tmp_path, monkeypatch) -> None:
@@ -1446,8 +1447,8 @@ def test_llm_receives_isolated_copies_of_deterministic_artifacts(tmp_path, monke
         ).all()
         evidence_source_ids = connection.execute(select(evidence_table.c.source_id)).scalars()
 
-    assert result.events == 5
-    assert len(event_rows) == 5
+    assert result.events == 8
+    assert len(event_rows) == 8
     assert all(row.id != "mutated-event" and row.event_key != "mutated-key" for row in event_rows)
     assert all(json.loads(row.payload_json)["id"] == row.id for row in event_rows)
     assert "mutated-source" not in set(evidence_source_ids)

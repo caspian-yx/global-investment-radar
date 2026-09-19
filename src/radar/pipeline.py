@@ -61,7 +61,7 @@ from radar.relevance import (
     build_event_target_relationships,
     summarize_relationships,
 )
-from radar.report import HtmlReportRenderer, report_context
+from radar.report import EmailHtmlReportRenderer, HtmlReportRenderer, report_context
 from radar.storage import RadarStore
 from radar.story import STORY_RULE_VERSION, consolidate_stories
 
@@ -657,6 +657,8 @@ def _run_started_pipeline(
         is_demo=is_demo,
         ai_test_data=ai_test_data,
         localized=localized_content,
+        markets=tuple(markets),
+        assets=tuple(universe["assets"]),
     )
     renderer = HtmlReportRenderer()
     html = renderer.render(context)
@@ -715,7 +717,8 @@ def _run_started_pipeline(
         logger.info("Email delivery started mode=%s", settings.email_mode)
         try:
             legacy_sender = build_email_sender(settings)
-            email_status = legacy_sender.send(subject=subject, html=html)
+            email_html = EmailHtmlReportRenderer().render(context)
+            email_status = legacy_sender.send(subject=subject, html=email_html)
         except Exception as exc:
             elapsed_seconds = round(time.perf_counter() - timer_started, 3)
             logger.error(

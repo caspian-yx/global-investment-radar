@@ -97,6 +97,7 @@ TYPE_POINTS = {
 MARKET_THRESHOLDS = {
     AssetClass.EQUITY_INDEX: (2.0, 4.0),
     AssetClass.EQUITY_ETF_PROXY: (2.0, 4.0),
+    AssetClass.RATE: (0.5, 1.0),
     AssetClass.FX: (1.0, 2.0),
     AssetClass.COMMODITY: (2.0, 4.0),
     AssetClass.CRYPTO: (5.0, 10.0),

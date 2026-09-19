@@ -20,6 +20,7 @@ from radar.config import Settings
 from radar.domain import (
     CollectionBatch,
     MacroObservation,
+    MarketHistoryPoint,
     MarketObservation,
     ProviderStatus,
     SourceCategory,
@@ -193,6 +194,9 @@ class DemoProvider:
             ("^GSPC", "S&P 500", "US", 6500.0, 6467.7, "USD"),
             ("^NDX", "Nasdaq 100", "US", 24010.0, 23724.0, "USD"),
             ("^VIX", "VIX", "US", 18.4, 17.1, "USD"),
+            ("^VXN", "VXN", "US", 20.6, 20.1, "USD"),
+            ("^UST2Y", "US 2Y Treasury Yield", "US", 3.82, 3.78, "%"),
+            ("^TNX", "US 10Y Treasury Yield", "US", 4.08, 4.02, "%"),
             ("^HSI", "Hang Seng", "HK", 24980.0, 25105.0, "HKD"),
             ("000300.SS", "CSI 300", "CN", 4720.0, 4682.5, "CNY"),
             ("^N225", "Nikkei 225", "JP", 45210.0, 44850.0, "JPY"),
@@ -213,6 +217,13 @@ class DemoProvider:
                 currency=currency,
                 provider=self.name,
                 is_demo=True,
+                history=tuple(
+                    MarketHistoryPoint(
+                        observed_at=observed - timedelta(days=offset),
+                        close=round(previous + (close - previous) * (6 - offset) / 6, 4),
+                    )
+                    for offset in range(8)
+                ),
             )
             for symbol, name, region, close, previous, currency in market_specs
         ]
@@ -417,6 +428,13 @@ class YahooChartProvider:
             change_pct=round((float(latest) / float(previous) - 1) * 100, 2),
             currency=currency,
             provider=self.name,
+            history=tuple(
+                MarketHistoryPoint(
+                    observed_at=datetime.fromtimestamp(ts, tz=UTC),
+                    close=float(close),
+                )
+                for ts, close in reversed(valid[-10:])
+            ),
         )
 
 

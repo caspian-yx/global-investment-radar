@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from test_briefing_composition import _compose
 
-from radar.report import HtmlReportRenderer, report_context
+from radar.report import EmailHtmlReportRenderer, WebHtmlReportRenderer, report_context
 
 
 def _render(*, briefing_override=None, **context_overrides) -> str:
@@ -14,7 +14,19 @@ def _render(*, briefing_override=None, **context_overrides) -> str:
         data_mode="live",
         **context_overrides,
     )
-    return HtmlReportRenderer().render(context)
+    return EmailHtmlReportRenderer().render(context)
+
+
+def _render_web(*, briefing_override=None, **context_overrides) -> str:
+    brief = briefing_override or _compose()[0]
+    context = report_context(
+        briefing=brief,
+        is_demo=False,
+        ai_test_data=False,
+        data_mode="live",
+        **context_overrides,
+    )
+    return WebHtmlReportRenderer().render(context)
 
 
 def test_c9_report_renders_complete_editorial_product() -> None:
@@ -75,7 +87,7 @@ def test_report_escapes_content_and_does_not_render_internal_ids() -> None:
             ),
         }
     )
-    html = HtmlReportRenderer().render(
+    html = EmailHtmlReportRenderer().render(
         report_context(
             briefing=brief,
             is_demo=False,
@@ -148,7 +160,7 @@ def test_low_activity_and_demo_states_are_explicit_and_complete() -> None:
         document_count=1,
         event_count=1,
     )
-    html = HtmlReportRenderer().render(
+    html = EmailHtmlReportRenderer().render(
         report_context(
             briefing=brief,
             is_demo=True,

@@ -102,6 +102,7 @@ class DriverConfidence(StrEnum):
 class AssetClass(StrEnum):
     EQUITY_INDEX = "EQUITY_INDEX"
     EQUITY_ETF_PROXY = "EQUITY_ETF_PROXY"
+    RATE = "RATE"
     FX = "FX"
     COMMODITY = "COMMODITY"
     CRYPTO = "CRYPTO"
@@ -502,6 +503,18 @@ class AIEnrichmentResult(BaseModel):
     usage: AIRunUsage
 
 
+class MarketHistoryPoint(BaseModel):
+    observed_at: datetime
+    close: float
+
+    @field_validator("observed_at")
+    @classmethod
+    def normalize_history_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("market history timestamps must be timezone-aware")
+        return value.astimezone(UTC)
+
+
 class MarketObservation(BaseModel):
     id: str
     symbol: str
@@ -515,6 +528,7 @@ class MarketObservation(BaseModel):
     currency: str | None = None
     provider: str
     is_demo: bool = False
+    history: tuple[MarketHistoryPoint, ...] = ()
 
     @field_validator("previous_observed_at", "observed_at")
     @classmethod
@@ -532,6 +546,11 @@ class MarketObservation(BaseModel):
             and self.previous_observed_at >= self.observed_at
         ):
             raise ValueError("previous market observation must precede latest observation")
+        if any(
+            current.observed_at <= following.observed_at
+            for current, following in zip(self.history, self.history[1:], strict=False)
+        ):
+            raise ValueError("market history must be ordered newest first")
         return self
 
 
