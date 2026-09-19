@@ -26,8 +26,10 @@ class EmailFocusItem(BaseModel):
     what_happened: str = Field(min_length=1)
     why_it_matters: str = Field(min_length=1)
     affected: str = Field(min_length=1)
-    market_reaction: str | None = None
-    unknown: str = Field(min_length=1)
+    market_reaction_zh: str | None = None
+    market_reaction_en: str | None = None
+    unknown_zh: str = Field(min_length=1)
+    unknown_en: str = Field(min_length=1)
     sources: tuple[BriefingSource, ...] = ()
 
 
@@ -35,11 +37,14 @@ class EmailMarketSignal(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     cluster_key: str = Field(min_length=1)
-    title: str = Field(min_length=1)
+    title_zh: str = Field(min_length=1)
+    title_en: str = Field(min_length=1)
     symbols: tuple[str, ...] = Field(min_length=1)
     observed: str = Field(min_length=1)
-    interpretation: str = Field(min_length=1)
-    unknown: str = Field(min_length=1)
+    interpretation_zh: str = Field(min_length=1)
+    interpretation_en: str = Field(min_length=1)
+    unknown_zh: str = Field(min_length=1)
+    unknown_en: str = Field(min_length=1)
 
 
 class EmailCatalyst(BaseModel):
@@ -103,20 +108,26 @@ def _affected(story: BriefingStoryCard) -> str:
     return "、".join(targets) if targets else "相关资产与行业"
 
 
-def _market_reaction(story: BriefingStoryCard) -> str | None:
+def _market_reaction(story: BriefingStoryCard, *, locale: str) -> str | None:
     if not story.market_reactions:
         return None
-    return "；".join(
-        f"{item.target_name} {item.percentage_move:+.2f}%（观察到相关反应，非因果结论）"
+    if locale == "zh-CN":
+        return "；".join(
+            f"{item.target_name} {item.percentage_move:+.2f}%（观察到相关反应，非因果结论）"
+            for item in story.market_reactions
+        )
+    return "; ".join(
+        f"{item.target_name} {item.percentage_move:+.2f}% (associated observation, not causal)"
         for item in story.market_reactions
     )
 
 
 def _focus_item(story: BriefingStoryCard) -> EmailFocusItem:
-    reaction = _market_reaction(story)
-    unknown = (
+    reaction_zh = _market_reaction(story, locale="zh-CN")
+    reaction_en = _market_reaction(story, locale="en")
+    unknown_zh = (
         "市场反应已有验证记录，但驱动与因果边界仍需后续证据确认。"
-        if reaction
+        if reaction_zh
         else "尚无足够证据确认直接市场影响或完整传导路径。"
     )
     return EmailFocusItem(
@@ -126,8 +137,14 @@ def _focus_item(story: BriefingStoryCard) -> EmailFocusItem:
         what_happened=story.what_happened,
         why_it_matters=story.why_it_matters,
         affected=_affected(story),
-        market_reaction=reaction,
-        unknown=unknown,
+        market_reaction_zh=reaction_zh,
+        market_reaction_en=reaction_en,
+        unknown_zh=unknown_zh,
+        unknown_en=(
+            "A validated reaction is present, but its driver and causal boundary remain open."
+            if reaction_en
+            else "Evidence is insufficient to confirm a direct market effect or full transmission path."
+        ),
         sources=story.sources,
     )
 
@@ -150,14 +167,17 @@ def _market_signals(
         result.append(
             EmailMarketSignal(
                 cluster_key="market:us-equity-divergence",
-                title="美国科技股相对韧性",
+                title_zh="美国科技股相对韧性",
+                title_en="US technology relative resilience",
                 symbols=("^NDX", "^DJI"),
                 observed=(
                     f"Nasdaq 100 {ndx.change_pct:+.2f}%；"
                     f"Dow Jones {dow.change_pct:+.2f}%"
                 ),
-                interpretation="科技股相对传统蓝筹更强，属于确定性指数分化观察。",
-                unknown="分化原因仍需结合利率、行业与事件证据判断。",
+                interpretation_zh="科技股相对传统蓝筹更强，这是由指数表现直接得出的分化观察。",
+                interpretation_en="Technology outperformed traditional blue chips in the observed index returns.",
+                unknown_zh="分化原因仍需结合利率、行业与事件证据判断。",
+                unknown_en="The driver still requires rates, sector and event evidence.",
             )
         )
     if volatility and "market:volatility" not in occupied:
@@ -165,13 +185,16 @@ def _market_signals(
         result.append(
             EmailMarketSignal(
                 cluster_key="market:volatility",
-                title="波动率共同变化",
+                title_zh="波动率共同变化",
+                title_en="Joint volatility move",
                 symbols=tuple(item.symbol for item in ordered),
                 observed="；".join(
                     f"{item.name} {item.change_pct:+.2f}%" for item in ordered
                 ),
-                interpretation="波动率指标正在共同重定价风险，但方向本身不证明具体驱动。",
-                unknown="尚无足够证据确认单一驱动。",
+                interpretation_zh="波动率指标正在共同重定价风险，但方向本身不证明具体驱动。",
+                interpretation_en="The volatility gauges are repricing risk together, but direction alone does not prove a driver.",
+                unknown_zh="尚无足够证据确认单一驱动。",
+                unknown_en="Evidence is insufficient to confirm a single driver.",
             )
         )
     for item in sorted(abnormal, key=lambda value: (-abs(value.change_pct), value.symbol)):
@@ -183,11 +206,14 @@ def _market_signals(
         result.append(
             EmailMarketSignal(
                 cluster_key=key,
-                title=f"{item.name} 异常波动",
+                title_zh=f"{item.name} 异常波动",
+                title_en=f"Abnormal move in {item.name}",
                 symbols=(item.symbol,),
                 observed=f"{item.name} {item.change_pct:+.2f}%",
-                interpretation="该变动已达到异常波动阈值，应优先寻找可靠证据。",
-                unknown="尚无足够证据确认主要驱动。",
+                interpretation_zh="该变动已达到异常波动阈值，应优先寻找可靠证据。",
+                interpretation_en="The move cleared the abnormality threshold and warrants evidence retrieval.",
+                unknown_zh="尚无足够证据确认主要驱动。",
+                unknown_en="Evidence is insufficient to confirm the main driver.",
             )
         )
     return tuple(result)

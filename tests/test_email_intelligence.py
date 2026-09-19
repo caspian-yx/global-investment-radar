@@ -40,8 +40,8 @@ def test_volatility_complex_is_one_cluster_not_two_focus_items() -> None:
     assert signal.symbols == ("^VIX", "^VXN")
     assert "-4.08%" in signal.observed
     assert "-3.36%" in signal.observed
-    assert "DRIVER_UNRESOLVED" not in signal.unknown
-    assert "尚无足够证据" in signal.unknown
+    assert "DRIVER_UNRESOLVED" not in signal.unknown_zh
+    assert "尚无足够证据" in signal.unknown_zh
 
 
 def test_focus_explains_decision_value_without_internal_enums() -> None:
@@ -54,7 +54,7 @@ def test_focus_explains_decision_value_without_internal_enums() -> None:
     assert first.what_happened
     assert first.why_it_matters
     assert first.affected
-    assert first.unknown
+    assert first.unknown_zh
     rendered = " ".join(
         filter(
             None,
@@ -62,8 +62,8 @@ def test_focus_explains_decision_value_without_internal_enums() -> None:
                 first.what_happened,
                 first.why_it_matters,
                 first.affected,
-                first.market_reaction,
-                first.unknown,
+                first.market_reaction_en,
+                first.unknown_en,
             ),
         )
     )

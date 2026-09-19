@@ -39,9 +39,9 @@ def test_localized_report_is_chinese_first_and_keeps_english_reference() -> None
     assert "中文标题：" in html
     assert "市场状态" in html
     assert "波动率与利率" in html
-    assert "跨资产情报" in html
+    assert "市场信号" in html
     assert "English reference / 英文原文" in html
-    assert "Things That Matter" in html
+    assert "Today’s Focus" in html
     assert "Evidence-linked intelligence, not investment advice." in html
     assert "<script" not in html.casefold()
     assert "briefing_id" not in html
@@ -49,7 +49,7 @@ def test_localized_report_is_chinese_first_and_keeps_english_reference() -> None
     assert body.index("全球投资雷达") < body.index("Global Investment Radar")
     assert body.count("全球投资雷达") == 1
     assert body.count("Global Investment Radar") == 1
-    assert body.index("English reference / 英文原文") < body.index("Overnight in 30 Seconds")
+    assert body.index("English reference / 英文原文") < body.index("Sources &amp; Data Quality")
     assert "全球投资晨报" in body.split("<table", 1)[0]
 
 
@@ -66,7 +66,7 @@ def test_english_report_shape_remains_the_default_without_localization() -> None
 
     assert '<html lang="en">' in html
     assert "中文本地化简报" not in html
-    assert "Things That Matter" in html
+    assert "Today’s Focus" in html
 
 
 def test_bilingual_snapshot_keeps_canonical_market_symbol_value_and_source_url() -> None:

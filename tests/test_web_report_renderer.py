@@ -75,9 +75,7 @@ def test_email_renderer_carries_the_c7_intelligence_product_in_email_safe_markup
         "Today’s Focus",
         "China / A-Shares",
         "Volatility &amp; Rates",
-        "Cross-Asset Intelligence",
-        "Overnight Intelligence",
-        "Watch Today",
+        "Market Signals",
         "What Matters Next",
         "Secondary Developments",
         "Sources &amp; Data Quality",
@@ -88,13 +86,13 @@ def test_email_renderer_carries_the_c7_intelligence_product_in_email_safe_markup
     assert "VXN" in email
     assert "US 10Y Treasury" in email
     assert "WTI Crude" in email
-    assert "Driver unresolved" in email
+    assert "Evidence is insufficient to confirm" in email
     assert "5D" in email
     assert "7D" in email
     assert "通信" in email
     assert "煤炭" in email
     assert "Sector ranking" in email
-    assert "previous #" in email
+    assert "What happened" in email
     assert "<script" not in email.casefold()
     assert "<svg" not in email.casefold()
     assert "backdrop-filter" not in email.casefold()

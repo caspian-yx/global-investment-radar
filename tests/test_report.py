@@ -64,7 +64,7 @@ def test_email_projection_consolidates_related_market_signals() -> None:
         )
     )
 
-    assert html.count("波动率共同变化") == 1
+    assert html.count("Joint volatility move") == 1
     assert "VIX -4.08%" in html
     assert "VXN -3.36%" in html
     assert "DRIVER_UNRESOLVED" not in html
