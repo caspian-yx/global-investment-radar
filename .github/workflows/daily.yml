@@ -14,7 +14,7 @@ on:
       run_mode:
         description: AI execution mode
         required: true
-        default: no-ai
+        default: ai
         type: choice
         options:
           - no-ai
@@ -22,7 +22,7 @@ on:
       localization_mode:
         description: Chinese briefing localization (requires run_mode ai)
         required: true
-        default: off
+        default: zh-CN
         type: choice
         options:
           - off

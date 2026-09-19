@@ -174,6 +174,9 @@ def render_recipient_email(
     briefing: DailyIntelligenceBrief,
     localized: LocalizedBriefingContent | None,
     composition: RecipientComposition,
+    *,
+    markets: tuple[MarketObservation, ...] = (),
+    assets: tuple[dict[str, Any], ...] = (),
 ) -> tuple[str, str, Literal["en", "zh-CN"]]:
     localized_primary = (
         localized is not None and composition.delivery_mode is not DeliveryMode.ENGLISH
@@ -193,5 +196,7 @@ def render_recipient_email(
         data_mode="live",
         localized=localized,
         composition=composition,
+        markets=markets,
+        assets=assets,
     )
     return subject, EmailHtmlReportRenderer().render(context), rendered_locale

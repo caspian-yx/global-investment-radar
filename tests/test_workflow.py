@@ -75,11 +75,16 @@ def test_daily_workflow_script_preserves_failure_through_tee(tmp_path) -> None:
     )
 
 
-def test_schedule_activates_localized_audience_while_manual_defaults_stay_safe() -> None:
+def test_schedule_and_manual_defaults_activate_localized_c7_email() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "localization_mode:" in workflow
-    assert "default: off" in workflow
+    run_mode_input = workflow.split("run_mode:", 1)[1].split("localization_mode:", 1)[0]
+    localization_input = workflow.split("localization_mode:", 1)[1].split(
+        "delivery_target:", 1
+    )[0]
+    assert "default: ai" in run_mode_input
+    assert "default: zh-CN" in localization_input
     assert "- zh-CN" in workflow
     localization_switch = (
         "LOCALIZATION_ENABLED: "

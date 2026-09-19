@@ -41,6 +41,67 @@ def test_web_and_email_renderers_have_separate_presentation_contracts() -> None:
     assert "<script" not in email.casefold()
 
 
+def test_email_renderer_carries_the_c7_intelligence_product_in_email_safe_markup() -> None:
+    briefing, _ = _compose()
+    markets = (
+        _market("^GSPC", "S&P 500", 0.7),
+        _market("^NDX", "Nasdaq 100", 1.4),
+        _market("^DJI", "Dow Jones", -0.2),
+        _market("^VIX", "VIX", -4.1, history=(21, 20, 19, 18, 17, 16, 15, 14)),
+        _market("^VXN", "VXN", -3.2, history=(28, 27, 26, 25, 24, 23, 22, 21)),
+        _market("^TNX", "US 10Y Treasury", 1.1, history=(4, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7)),
+        _market("CL=F", "WTI Crude", -3.6, history=(79, 78, 77, 76, 75, 74, 73, 72)),
+        _market("000001.SS", "SSE Composite", 0.8),
+    )
+    sectors = (
+        ChinaSectorObservation(sector="通信", change_1d=4.57),
+        ChinaSectorObservation(sector="煤炭", change_1d=-2.31),
+    )
+
+    email = EmailHtmlReportRenderer().render(
+        report_context(
+            briefing=briefing,
+            is_demo=False,
+            ai_test_data=False,
+            data_mode="live",
+            markets=markets,
+            china_sectors=sectors,
+        )
+    )
+
+    for section in (
+        "Market Regime",
+        "Global Market Strip",
+        "Today’s Focus",
+        "China / A-Shares",
+        "Volatility &amp; Rates",
+        "Cross-Asset Intelligence",
+        "Overnight Intelligence",
+        "Watch Today",
+        "What Matters Next",
+        "Secondary Developments",
+        "Sources &amp; Data Quality",
+    ):
+        assert section in email
+    assert "CAUTIOUS" in email
+    assert "VIX" in email
+    assert "VXN" in email
+    assert "US 10Y Treasury" in email
+    assert "WTI Crude" in email
+    assert "Driver unresolved" in email
+    assert "5D" in email
+    assert "7D" in email
+    assert "通信" in email
+    assert "煤炭" in email
+    assert "Sector ranking" in email
+    assert "previous #" in email
+    assert "<script" not in email.casefold()
+    assert "<svg" not in email.casefold()
+    assert "backdrop-filter" not in email.casefold()
+    assert "display:grid" not in email.casefold()
+    assert "display:flex" not in email.casefold()
+
+
 def test_web_interaction_contract_has_real_ranges_tooltips_and_fail_closed_hooks() -> None:
     briefing, _ = _compose()
     market = _market("^VIX", "VIX", 4.0, history=(1, 2, 3, 4, 5, 6, 7, 8))

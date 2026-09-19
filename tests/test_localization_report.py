@@ -37,6 +37,9 @@ def test_localized_report_is_chinese_first_and_keeps_english_reference() -> None
     assert '<html lang="zh-CN">' in html
     assert "中文本地化简报" in html
     assert "中文标题：" in html
+    assert "市场状态" in html
+    assert "波动率与利率" in html
+    assert "跨资产情报" in html
     assert "English reference / 英文原文" in html
     assert "Things That Matter" in html
     assert "Evidence-linked intelligence, not investment advice." in html

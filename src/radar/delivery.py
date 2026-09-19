@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -18,7 +18,7 @@ from radar.audience import (
 )
 from radar.briefing import DailyIntelligenceBrief
 from radar.config import Settings
-from radar.domain import content_hash, stable_id
+from radar.domain import MarketObservation, content_hash, stable_id
 from radar.email import RecipientEmailSender
 from radar.localization import (
     C91_RULE_VERSION,
@@ -336,11 +336,19 @@ class AudienceService:
         sender: RecipientEmailSender,
         *,
         localization_snapshot_id: str | None = None,
+        markets: tuple[MarketObservation, ...] = (),
+        assets: tuple[dict[str, Any], ...] = (),
     ) -> AudienceDeliverySummary:
         recipients = self.preflight(briefing, explicit_audience=True)
         attempted = sent = failed = skipped = 0
         for recipient in recipients:
-            rendered = self._render(briefing, recipient, localized=localized)
+            rendered = self._render(
+                briefing,
+                recipient,
+                localized=localized,
+                markets=markets,
+                assets=assets,
+            )
             now = datetime.now(UTC)
             record = DeliveryRecord(
                 id=build_delivery_identity(briefing, recipient),
@@ -421,6 +429,8 @@ class AudienceService:
         *,
         is_test: bool = False,
         localized: LocalizedBriefingContent | None = None,
+        markets: tuple[MarketObservation, ...] = (),
+        assets: tuple[dict[str, Any], ...] = (),
     ) -> RenderedDelivery:
         if localized is None:
             localized = None
@@ -435,5 +445,7 @@ class AudienceService:
                 personal_note=recipient.personal_note,
                 is_test=is_test,
             ),
+            markets=markets,
+            assets=assets,
         )
         return RenderedDelivery(recipient, subject, html, rendered_locale)

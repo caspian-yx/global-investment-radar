@@ -1,6 +1,7 @@
 import pytest
 from test_briefing_composition import _compose
 from test_localization_storage import _snapshot
+from test_web_intelligence import _market
 
 from radar.audience import DeliveryKind, DeliveryMode, DeliveryStatus
 from radar.config import Settings
@@ -143,6 +144,40 @@ def test_delivery_identity_is_deterministic_and_each_recipient_is_independent(tm
     assert records[a.id].status is DeliveryStatus.SENT
     assert records[b.id].status is DeliveryStatus.FAILED
     assert records[a.id].delivery_kind is DeliveryKind.PRODUCTION
+
+
+def test_audience_delivery_keeps_full_c7_market_history_in_recipient_email(tmp_path) -> None:
+    store = _store(tmp_path)
+    service = AudienceService(store, _settings())
+    service.add_recipient("A", "a@example.com", DeliveryMode.ENGLISH, None)
+    briefing, _ = _compose()
+    delivered: dict[str, str] = {}
+
+    class CaptureSender:
+        def send_to(self, *, recipient: str, subject: str, html: str) -> str:
+            _ = recipient, subject
+            delivered["html"] = html
+            return "accepted"
+
+    summary = service.deliver_briefing_to_audience(
+        briefing,
+        None,
+        CaptureSender(),
+        markets=(
+            _market(
+                "^VIX",
+                "VIX",
+                -4.1,
+                history=(21, 20, 19, 18, 17, 16, 15, 14),
+            ),
+        ),
+    )
+
+    assert summary.sent_count == 1
+    assert "Volatility &amp; Rates" in delivered["html"]
+    assert "5D" in delivered["html"]
+    assert "7D" in delivered["html"]
+    assert "7-day history unavailable" not in delivered["html"]
 
 
 def test_existing_pending_sent_failed_and_skipped_records_are_never_resent(tmp_path) -> None:

@@ -697,6 +697,8 @@ def _run_started_pipeline(
             localization_snapshot_id=(
                 localization_snapshot.id if localization_snapshot is not None else None
             ),
+            markets=tuple(markets),
+            assets=tuple(universe["assets"]),
         )
         email_status = (
             "audience: "
