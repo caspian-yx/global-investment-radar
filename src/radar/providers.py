@@ -197,7 +197,7 @@ class DemoProvider:
             ("^NDX", "Nasdaq 100", "US", 24010.0, 23724.0, "USD"),
             ("^VIX", "VIX", "US", 18.4, 17.1, "USD"),
             ("^VXN", "VXN", "US", 20.6, 20.1, "USD"),
-            ("^UST2Y", "US 2Y Treasury Yield", "US", 3.82, 3.78, "%"),
+            ("DGS2", "US 2Y Treasury Yield", "US", 3.82, 3.78, "%"),
             ("^TNX", "US 10Y Treasury Yield", "US", 4.08, 4.02, "%"),
             ("^HSI", "Hang Seng", "HK", 24980.0, 25105.0, "HKD"),
             ("000300.SS", "CSI 300", "CN", 4720.0, 4682.5, "CNY"),

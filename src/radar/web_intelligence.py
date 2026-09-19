@@ -418,7 +418,7 @@ def _coverage_gaps(
     for code, symbol, reason in required:
         aliases: tuple[str, ...] = (symbol,)
         if symbol == "US2Y":
-            aliases = ("US2Y", "^UST2Y", "2Y")
+            aliases = ("DGS2", "US2Y", "^UST2Y", "2Y")
         elif symbol == "US10Y":
             aliases = ("US10Y", "^TNX", "10Y")
         if _find_market(lookup, *aliases) is None:

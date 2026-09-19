@@ -119,3 +119,21 @@ def test_focus_and_market_signals_have_disjoint_cluster_identities() -> None:
     focus_clusters = {item.cluster_key for item in projection.focus}
     signal_clusters = {item.cluster_key for item in projection.market_signals}
     assert focus_clusters.isdisjoint(signal_clusters)
+
+
+def test_us_index_divergence_is_one_reader_facing_signal() -> None:
+    briefing, _ = _compose()
+    projection = build_email_intelligence(
+        briefing.model_copy(update={"primary_stories": (), "watch_today": ()}),
+        markets=(
+            _market("^NDX", "Nasdaq 100", 0.02),
+            _market("^DJI", "Dow Jones", -1.21),
+        ),
+    )
+
+    assert len(projection.market_signals) == 1
+    signal = projection.market_signals[0]
+    assert signal.cluster_key == "market:us-equity-divergence"
+    assert signal.symbols == ("^NDX", "^DJI")
+    assert "Nasdaq 100 +0.02%" in signal.observed
+    assert "Dow Jones -1.21%" in signal.observed

@@ -11,6 +11,7 @@
     {"symbol": "^HSI", "name": "Hang Seng", "region": "HK", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Hong_Kong", "close_time": "16:00", "topics": ["CHINA", "TECHNOLOGY", "REGULATION"]},
     {"symbol": "3033.HK", "name": "Hang Seng TECH ETF proxy", "region": "HK", "asset_class": "EQUITY_ETF_PROXY", "session_kind": "EXCHANGE", "timezone": "Asia/Hong_Kong", "close_time": "16:00", "topics": ["CHINA", "TECHNOLOGY", "REGULATION"]},
     {"symbol": "000001.SS", "name": "SSE Composite", "region": "CN", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Shanghai", "close_time": "15:00", "topics": ["CHINA", "RATES", "REGULATION"]},
+    {"symbol": "000300.SS", "name": "CSI 300", "region": "CN", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Shanghai", "close_time": "15:00", "topics": ["CHINA", "RATES", "REGULATION"]},
     {"symbol": "399001.SZ", "name": "Shenzhen Component", "region": "CN", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Shanghai", "close_time": "15:00", "topics": ["CHINA", "TECHNOLOGY", "REGULATION"]},
     {"symbol": "399006.SZ", "name": "ChiNext", "region": "CN", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Shanghai", "close_time": "15:00", "topics": ["CHINA", "TECHNOLOGY", "RATES"]},
     {"symbol": "000688.SS", "name": "STAR 50", "region": "CN", "asset_class": "EQUITY_INDEX", "session_kind": "EXCHANGE", "timezone": "Asia/Shanghai", "close_time": "15:00", "topics": ["CHINA", "TECHNOLOGY"]},

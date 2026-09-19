@@ -85,9 +85,7 @@ def _report_end(report_date: str) -> datetime:
 
 def _is_current(story: BriefingStoryCard, report_end: datetime) -> bool:
     age = report_end - story.occurred_at.astimezone(UTC)
-    if age <= timedelta(hours=24):
-        return True
-    return age <= timedelta(hours=48) and story.supporting_source_count > 0
+    return age <= timedelta(hours=24)
 
 
 def _story_cluster(story: BriefingStoryCard) -> str:
@@ -138,6 +136,28 @@ def _market_signals(
     abnormal = tuple(item for item in markets if abs(item.change_pct) >= 3.0)
     volatility = tuple(item for item in abnormal if item.symbol in {"^VIX", "^VXN"})
     result: list[EmailMarketSignal] = []
+    lookup = {item.symbol: item for item in markets}
+    ndx = lookup.get("^NDX")
+    dow = lookup.get("^DJI")
+    if (
+        ndx is not None
+        and dow is not None
+        and ndx.change_pct - dow.change_pct >= 1.0
+        and "market:us-equity-divergence" not in occupied
+    ):
+        result.append(
+            EmailMarketSignal(
+                cluster_key="market:us-equity-divergence",
+                title="美国科技股相对韧性",
+                symbols=("^NDX", "^DJI"),
+                observed=(
+                    f"Nasdaq 100 {ndx.change_pct:+.2f}%；"
+                    f"Dow Jones {dow.change_pct:+.2f}%"
+                ),
+                interpretation="科技股相对传统蓝筹更强，属于确定性指数分化观察。",
+                unknown="分化原因仍需结合利率、行业与事件证据判断。",
+            )
+        )
     if volatility and "market:volatility" not in occupied:
         ordered = tuple(sorted(volatility, key=lambda item: item.symbol))
         result.append(
@@ -189,7 +209,11 @@ def build_email_intelligence(
     markets: Iterable[MarketObservation] = (),
 ) -> EmailIntelligence:
     report_end = _report_end(briefing.report_date)
-    current = tuple(story for story in briefing.primary_stories if _is_current(story, report_end))
+    current = tuple(
+        story
+        for story in briefing.primary_stories
+        if _is_current(story, report_end) and story.sources
+    )
     stale_ids = tuple(
         story.event_id for story in briefing.primary_stories if story not in current
     )

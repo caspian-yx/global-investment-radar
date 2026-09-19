@@ -656,3 +656,5 @@ class PipelineResult(BaseModel):
     email_status: str
     elapsed_seconds: float
     provider_statuses: list[ProviderRunStatus]
+    recall_funnel: dict[str, int] = Field(default_factory=dict)
+    email_intelligence: dict[str, JsonValue] = Field(default_factory=dict)
