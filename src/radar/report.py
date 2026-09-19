@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -9,7 +9,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from radar.audience import DeliveryMode, RecipientProfile
 from radar.briefing import DailyIntelligenceBrief
 from radar.config import PROJECT_ROOT
-from radar.domain import content_hash
+from radar.domain import MarketObservation, content_hash, stable_id
 from radar.localization import C91_LABELS, LocalizedBriefingContent
 from radar.web_intelligence import build_web_intelligence
 
@@ -89,18 +89,12 @@ def report_context(
         {item.key: item.text for item in localized.market_names} if localized is not None else {}
     )
     localized_primary_stories = (
-        {
-            item.key.removeprefix("story:"): item
-            for item in localized.primary_stories
-        }
+        {item.key.removeprefix("story:"): item for item in localized.primary_stories}
         if localized is not None
         else {}
     )
     localized_watch_items = (
-        {
-            item.key.removeprefix("watch:"): item
-            for item in localized.watch_today
-        }
+        {item.key.removeprefix("watch:"): item for item in localized.watch_today}
         if localized is not None
         else {}
     )
@@ -118,12 +112,15 @@ def report_context(
         )
         if part is not None and part.strip()
     )
+    effective_markets = markets or _snapshot_markets(briefing)
     web_report = build_web_intelligence(
         briefing,
-        markets=markets,
+        markets=effective_markets,
         assets=assets,
         china_sectors=china_sectors,
     )
+    web_report = replace(web_report, localization_unavailable=localized is None)
+    web_primary_zh = composition is None or composition.delivery_mode is not DeliveryMode.ENGLISH
     return {
         "briefing": briefing,
         "is_demo": is_demo,
@@ -137,9 +134,40 @@ def report_context(
         "localized_primary": localized_primary,
         "include_english_reference": include_english_reference,
         "render_english_body": not localized_primary or include_english_reference,
+        "web_primary_zh": web_primary_zh,
+        "web_include_english_reference": web_primary_zh,
+        "web_localization_state": "available"
+        if localized is not None
+        else "Localization unavailable",
         "note_text": "\n\n".join(note_parts),
         "web_report": web_report,
     }
+
+
+def _snapshot_markets(briefing: DailyIntelligenceBrief) -> tuple[MarketObservation, ...]:
+    """Presentation fallback for callers that only have the immutable briefing snapshot."""
+
+    result: list[MarketObservation] = []
+    for group in briefing.market_snapshot:
+        for item in group.items:
+            previous = (
+                item.close / (1 + item.change_pct / 100) if item.change_pct != -100 else item.close
+            )
+            result.append(
+                MarketObservation(
+                    id=stable_id("presentation-snapshot", item.symbol),
+                    symbol=item.symbol,
+                    name=item.name,
+                    region=group.name,
+                    observed_at=item.observed_at,
+                    close=item.close,
+                    previous_close=previous,
+                    change_pct=item.change_pct,
+                    currency=item.currency,
+                    provider="briefing-snapshot",
+                )
+            )
+    return tuple(result)
 
 
 def render_recipient_email(

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
+from radar.assets import CanonicalAsset, canonical_asset
 from radar.briefing import (
     BriefingStoryCard,
     DailyIntelligenceBrief,
@@ -42,6 +43,7 @@ class SignalState(StrEnum):
 
 
 class ChartKind(StrEnum):
+    MARKET_TREND = "MARKET_TREND"
     CHINA_SECTORS = "CHINA_SECTORS"
     EXCEPTIONAL_MOVE = "EXCEPTIONAL_MOVE"
     RISK_PULSE = "RISK_PULSE"
@@ -84,6 +86,8 @@ class CrossAssetSignal:
     label: str
     state: SignalState
     symbols: tuple[str, ...]
+    label_zh: str = "跨资产信号"
+    detail_zh: str = "已观察到跨资产关系，因果解释仍需证据。"
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,45 @@ class ChinaIntelligence:
     dispersion: float
     leadership: str | None
     available: bool
+
+
+@dataclass(frozen=True)
+class MarketCard:
+    canonical_key: str
+    provider_symbol: str
+    label_zh: str
+    label_en: str
+    region: str
+    level: float | None
+    absolute_change: float | None
+    absolute_unit: str
+    change_pct: float | None
+    direction: str
+    session: str
+    available: bool
+
+
+@dataclass(frozen=True)
+class TrendSeries:
+    canonical_key: str
+    provider_symbol: str
+    label_zh: str
+    label_en: str
+    range_key: str
+    points: tuple[tuple[str, float], ...]
+    path: str
+    area_path: str
+
+
+@dataclass(frozen=True)
+class ChinaCapabilities:
+    source: str | None
+    core_indices: bool
+    sectors: bool
+    breadth: bool
+    turnover: bool
+    leadership: bool
+    unavailable: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -190,6 +233,14 @@ class WebReportModel:
     exceptional_move_visual_enabled: bool = False
     story_explanations: dict[str, str] = field(default_factory=dict)
     decayed_stories: tuple[BriefingStoryCard, ...] = ()
+    market_cards: tuple[MarketCard, ...] = ()
+    trend_series: tuple[TrendSeries, ...] = ()
+    default_trend_key: str | None = None
+    china_capabilities: ChinaCapabilities = field(
+        default_factory=lambda: ChinaCapabilities(None, False, False, False, False, False, ())
+    )
+    ai_market_brief: tuple[str, ...] = ()
+    localization_unavailable: bool = False
 
 
 def build_web_report_model(
@@ -353,6 +404,11 @@ def _cross_asset_signals(
                 "US technology relative strength",
                 SignalState.DETERMINISTIC_SIGNAL,
                 (ndx.symbol, dow.symbol),
+                "科技股相对韧性",
+                (
+                    f"纳斯达克100 {ndx.change_pct:+.2f}% 对比道琼斯 "
+                    f"{dow.change_pct:+.2f}%，科技股相对更强。"
+                ),
             )
         )
     if (
@@ -366,6 +422,11 @@ def _cross_asset_signals(
                 "VIX is rising faster than VXN",
                 SignalState.DETERMINISTIC_SIGNAL,
                 (vix.symbol, vxn.symbol),
+                "广义风险上升快于科技波动",
+                (
+                    f"VIX {vix.change_pct:+.2f}% 对比 VXN {vxn.change_pct:+.2f}%，"
+                    "风险上升并非均匀分布。"
+                ),
             )
         )
     if wti is not None and ten_year is not None and wti.change_pct > 0 and ten_year.change_pct > 0:
@@ -375,6 +436,11 @@ def _cross_asset_signals(
                 "Oil and Treasury yields are rising together",
                 SignalState.DETERMINISTIC_SIGNAL,
                 (wti.symbol, ten_year.symbol),
+                "能源与利率同向",
+                (
+                    f"WTI {wti.change_pct:+.2f}%、美国10年期 "
+                    f"{ten_year.change_pct:+.2f}%，通胀压力信号仍需进一步证据。"
+                ),
             )
         )
     return tuple(signals)
@@ -505,31 +571,162 @@ def build_sparkline_points(
     return " ".join(points)
 
 
+def _svg_path(
+    history: tuple[MarketHistoryPoint, ...], *, width: float = 720, height: float = 280
+) -> tuple[str, str]:
+    ordered = tuple(reversed(history[:32]))
+    if len(ordered) < 2:
+        return "", ""
+    values = [item.close for item in ordered]
+    low, high = min(values), max(values)
+    span = high - low or 1.0
+    points = [
+        (
+            width * index / (len(values) - 1),
+            height - ((value - low) / span * (height - 24) + 12),
+        )
+        for index, value in enumerate(values)
+    ]
+    path = "M " + " L ".join(f"{x:.2f} {y:.2f}" for x, y in points)
+    area = f"{path} L {points[-1][0]:.2f} {height:.2f} L {points[0][0]:.2f} {height:.2f} Z"
+    return path, area
+
+
+def _market_cards(markets: tuple[MarketObservation, ...]) -> tuple[MarketCard, ...]:
+    order = {
+        "SP500": 1,
+        "NASDAQ100": 2,
+        "DOW": 3,
+        "RUSSELL2000": 4,
+        "VIX": 5,
+        "VXN": 6,
+        "US_2Y": 7,
+        "US_10Y": 8,
+        "DXY": 9,
+        "WTI": 10,
+        "GOLD": 11,
+    }
+    cards: list[MarketCard] = []
+    for item in markets:
+        identity = canonical_asset(item.symbol) or canonical_asset(item.name)
+        if identity is None:
+            identity = CanonicalAsset(item.symbol, item.name, item.name, "unknown", (item.symbol,))
+        is_rate = identity.asset_class == "rate"
+        cards.append(
+            MarketCard(
+                canonical_key=identity.key,
+                provider_symbol=item.symbol,
+                label_zh=identity.label_zh,
+                label_en=identity.label_en,
+                region=item.region,
+                level=item.close,
+                absolute_change=round(
+                    (item.close - item.previous_close) * (100 if is_rate else 1), 4
+                ),
+                absolute_unit="bp" if is_rate else (item.currency or ""),
+                change_pct=item.change_pct,
+                direction="up"
+                if item.change_pct > 0
+                else "down"
+                if item.change_pct < 0
+                else "flat",
+                session="latest observation",
+                available=True,
+            )
+        )
+    return tuple(sorted(cards, key=lambda card: (order.get(card.canonical_key, 50), card.label_en)))
+
+
+def _trend_series(markets: tuple[MarketObservation, ...]) -> tuple[TrendSeries, ...]:
+    result: list[TrendSeries] = []
+    allowed = {"SP500", "NASDAQ100", "VIX", "VXN", "US_10Y", "WTI", "GOLD"}
+    for item in markets:
+        identity = canonical_asset(item.symbol) or canonical_asset(item.name)
+        if identity is None or identity.key not in allowed:
+            continue
+        for range_key, required, history in (
+            ("1D", 2, item.history[:2]),
+            ("5D", 6, item.history[:6]),
+            ("1M", 20, item.history[:20]),
+        ):
+            if len(history) < required:
+                continue
+            path, area = _svg_path(history)
+            points = tuple(
+                (point.observed_at.isoformat(), point.close) for point in reversed(history)
+            )
+            result.append(
+                TrendSeries(
+                    identity.key,
+                    item.symbol,
+                    identity.label_zh,
+                    identity.label_en,
+                    range_key,
+                    points,
+                    path,
+                    area,
+                )
+            )
+    return tuple(result)
+
+
+def _china_capabilities(china: ChinaIntelligence) -> ChinaCapabilities:
+    return ChinaCapabilities(
+        source=china.sectors[0].provider
+        if china.sectors
+        else (china.indices[0].provider if china.indices else None),
+        core_indices=bool(china.indices),
+        sectors=bool(china.sectors),
+        breadth=bool(china.sectors),
+        turnover=False,
+        leadership=china.leadership is not None,
+        unavailable=tuple(
+            name
+            for name, available in (
+                ("core indices", bool(china.indices)),
+                ("sector ranking", bool(china.sectors)),
+                ("breadth", bool(china.sectors)),
+                ("turnover", False),
+                ("leadership", china.leadership is not None),
+            )
+            if not available
+        ),
+    )
+
+
+def _ai_market_brief(
+    markets: tuple[MarketObservation, ...],
+    abnormal_moves: tuple[AbnormalMove, ...],
+    signals: tuple[CrossAssetSignal, ...],
+    regime: MarketRegime,
+) -> tuple[str, ...]:
+    if not markets and not abnormal_moves and not signals:
+        return ("AI synthesis unavailable: validated market observations were not supplied.",)
+    paragraphs = [f"Deterministic market context: {regime.label}."]
+    if abnormal_moves:
+        paragraphs.append(
+            "异常波动："
+            + "；".join(f"{item.name} {item.change_pct:+.2f}%" for item in abnormal_moves)
+            + "。驱动仅在有证据时确认。"
+        )
+    if signals:
+        paragraphs.append("跨资产观察：" + "；".join(item.detail_zh for item in signals) + "")
+    return tuple(paragraphs[:4])
+
+
 def select_major_visuals(
     intelligence: WebReportModel, *, max_visuals: int = 2
 ) -> tuple[ChartEligibility, ...]:
     if max_visuals < 0:
         raise ValueError("max_visuals must be non-negative")
-    risk_keys = tuple(
-        item.symbol
-        for item in intelligence.market_observations
-        if item.symbol in {"^VIX", "^VXN", "US10Y", "^TNX", "CL=F"}
-        and len(item.history) >= 8
+    trend_keys = tuple(
+        item.provider_symbol for item in intelligence.trend_series if item.range_key == "5D"
     )
     candidates: list[ChartEligibility] = []
-    if risk_keys:
+    if trend_keys:
         candidates.append(
             ChartEligibility(
-                ChartKind.RISK_PULSE, True, "Risk series have usable history.", risk_keys
-            )
-        )
-    if intelligence.china.available:
-        candidates.append(
-            ChartEligibility(
-                ChartKind.CHINA_SECTORS,
-                True,
-                "Validated sector observations are ranked.",
-                tuple(item.sector for item in intelligence.china.sectors),
+                ChartKind.MARKET_TREND, True, "Validated market history is available.", trend_keys
             )
         )
     if intelligence.abnormal_moves:
@@ -541,7 +738,18 @@ def select_major_visuals(
                 tuple(item.symbol for item in intelligence.abnormal_moves),
             )
         )
-    return tuple(sorted(candidates, key=lambda item: item.kind.value)[:max_visuals])
+    if intelligence.china.available and len(candidates) < max_visuals:
+        candidates.append(
+            ChartEligibility(
+                ChartKind.CHINA_SECTORS,
+                True,
+                "Validated sector observations are ranked.",
+                tuple(item.sector for item in intelligence.china.sectors),
+            )
+        )
+    if max_visuals == 0:
+        return ()
+    return tuple(candidates[:max_visuals])
 
 
 def build_web_intelligence(
@@ -591,6 +799,15 @@ def build_web_intelligence(
         },
         story_explanations=_story_explanations(briefing),
         decayed_stories=decayed_stories,
+        market_cards=_market_cards(market_items),
+        trend_series=_trend_series(market_items),
+    )
+    intelligence = replace(
+        intelligence,
+        china_capabilities=_china_capabilities(intelligence.china),
+        ai_market_brief=_ai_market_brief(
+            market_items, abnormal_moves, signals, intelligence.regime
+        ),
     )
     major_visuals = select_major_visuals(intelligence)
     visual_kinds = {item.kind for item in major_visuals if item.eligible}
