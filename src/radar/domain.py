@@ -287,9 +287,7 @@ class SourceDocument(BaseModel):
 
     @field_validator("provider_metadata")
     @classmethod
-    def reject_sensitive_metadata(
-        cls, value: dict[str, JsonValue]
-    ) -> dict[str, JsonValue]:
+    def reject_sensitive_metadata(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
         sensitive_key_fragments = {
             "apikey",
             "authorization",
@@ -300,9 +298,7 @@ class SourceDocument(BaseModel):
         }
 
         def is_sensitive_key(key: str) -> bool:
-            normalized = "".join(
-                character for character in key.casefold() if character.isalnum()
-            )
+            normalized = "".join(character for character in key.casefold() if character.isalnum())
             return any(fragment in normalized for fragment in sensitive_key_fragments)
 
         def contains_sensitive_key(item: JsonValue) -> bool:
@@ -339,10 +335,7 @@ class Evidence(BaseModel):
     @model_validator(mode="after")
     def validate_legacy_document_reference(self) -> Evidence:
         if self.source_kind is SourceKind.DOCUMENT:
-            if (
-                self.source_document_id is not None
-                and self.source_document_id != self.source_id
-            ):
+            if self.source_document_id is not None and self.source_document_id != self.source_id:
                 raise ValueError("document provenance IDs must agree")
         elif self.source_document_id is not None:
             raise ValueError("non-document evidence cannot carry source_document_id")
@@ -427,15 +420,10 @@ class ExplanationBundle(BaseModel):
         candidate_ids = [item.id for item in self.driver_candidates]
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError("ExplanationBundle DriverCandidate IDs must be unique")
-        if any(
-            item.target_event_id != self.target_event.id
-            for item in self.driver_candidates
-        ):
+        if any(item.target_event_id != self.target_event.id for item in self.driver_candidates):
             raise ValueError("ExplanationBundle DriverCandidates must share its target Event")
         if self.driver_candidates != rank_driver_candidates(self.driver_candidates):
-            raise ValueError(
-                "ExplanationBundle DriverCandidates must use C2.2 semantic order"
-            )
+            raise ValueError("ExplanationBundle DriverCandidates must use C2.2 semantic order")
         expected_claim_ids = sorted(
             {item.interpretation_claim_id for item in self.driver_candidates}
         )
@@ -541,10 +529,7 @@ class MarketObservation(BaseModel):
 
     @model_validator(mode="after")
     def validate_market_interval(self) -> MarketObservation:
-        if (
-            self.previous_observed_at is not None
-            and self.previous_observed_at >= self.observed_at
-        ):
+        if self.previous_observed_at is not None and self.previous_observed_at >= self.observed_at:
             raise ValueError("previous market observation must precede latest observation")
         if any(
             current.observed_at <= following.observed_at
@@ -567,9 +552,7 @@ class MacroObservation(BaseModel):
     change_label: str | None
     unit: str
     provider: str
-    source_document_id: str | None = Field(
-        default=None, min_length=1, pattern=r".*\S.*"
-    )
+    source_document_id: str | None = Field(default=None, min_length=1, pattern=r".*\S.*")
     is_demo: bool = False
 
 
@@ -656,3 +639,5 @@ class PipelineResult(BaseModel):
     email_status: str
     elapsed_seconds: float
     provider_statuses: list[ProviderRunStatus]
+    recall_funnel: dict[str, int] = Field(default_factory=dict)
+    email_intelligence: dict[str, JsonValue] = Field(default_factory=dict)

@@ -23,6 +23,7 @@ from radar.ingestion import deduplicate_source_documents
 from radar.providers import (
     BLSMacroProvider,
     DemoProvider,
+    FredYieldProvider,
     OfficialRSSProvider,
     RSSFeedConfig,
     YahooChartProvider,
@@ -207,8 +208,7 @@ def test_fed_rss_fixture_parses_with_rfc2822_date() -> None:
     assert document.published_at == datetime(2026, 9, 4, 15, tzinfo=UTC)
     assert document.collected_at == datetime(2026, 9, 8, 0, tzinfo=UTC)
     assert document.provider_native_id == (
-        "https://www.federalreserve.gov/newsevents/pressreleases/"
-        "enforcement20260904a.htm"
+        "https://www.federalreserve.gov/newsevents/pressreleases/enforcement20260904a.htm"
     )
     assert document.source_category is SourceCategory.OFFICIAL
     assert document.source_role is SourceRole.PRIMARY
@@ -301,7 +301,7 @@ def test_atom_parser_uses_alternate_page_link_regardless_of_link_order(
     if reverse_links:
         links.reverse()
     raw = f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry>
-      <title>Policy update</title>{''.join(links)}
+      <title>Policy update</title>{"".join(links)}
       <updated>2026-09-07T20:00:00Z</updated>
     </entry></feed>"""
     provider = OfficialRSSProvider([], lookback_hours=48)
@@ -392,9 +392,7 @@ def test_approved_feed_fixtures_preserve_provenance_and_publication_time(
 ) -> None:
     provider = OfficialRSSProvider([], lookback_hours=168)
     universe = load_universe(Settings(_env_file=None))
-    registered_feeds = {
-        item["provider_name"]: item for item in universe["rss_feeds"]
-    }
+    registered_feeds = {item["provider_name"]: item for item in universe["rss_feeds"]}
     registered_feed = registered_feeds[str(feed["provider_name"])]
 
     result = provider._parse(
@@ -417,21 +415,19 @@ def test_approved_feed_fixtures_preserve_provenance_and_publication_time(
     if fixture_name == "nbs_china_releases.xml":
         assert document.title == "Consumer Prices in August 2026"
         assert document.canonical_url == (
-            "https://www.stats.gov.cn/english/PressRelease/202609/"
-            "t20260910_000001.html"
+            "https://www.stats.gov.cn/english/PressRelease/202609/t20260910_000001.html"
         )
         assert document.content == "The consumer price index increased year on year."
-        assert document.provider_metadata["publication_timezone_inferred"] == registered_feed[
-            "publication_timezone"
-        ]
+        assert (
+            document.provider_metadata["publication_timezone_inferred"]
+            == registered_feed["publication_timezone"]
+        )
 
 
 def test_approved_source_families_enter_provider_neutral_event_extraction() -> None:
     now = datetime(2026, 9, 11, 12, tzinfo=UTC)
     universe = load_universe(Settings(_env_file=None))
-    registered_feeds = {
-        item["provider_name"]: item for item in universe["rss_feeds"]
-    }
+    registered_feeds = {item["provider_name"]: item for item in universe["rss_feeds"]}
     provider = OfficialRSSProvider([], lookback_hours=168)
     documents = []
     for fixture_name, feed, _, _ in APPROVED_FEED_FIXTURES:
@@ -491,10 +487,10 @@ def test_rss_meta_normalization_does_not_modify_cdata() -> None:
     provider = OfficialRSSProvider([], lookback_hours=48)
     raw = (
         '<rss><channel><meta name="feed" content="metadata">'
-        '<item><title>Item</title><link>https://example.test/item</link>'
-        '<pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>'
+        "<item><title>Item</title><link>https://example.test/item</link>"
+        "<pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>"
         '<description><![CDATA[<meta name="content"/>Body]]></description>'
-        '</item></channel></rss>'
+        "</item></channel></rss>"
     )
 
     normalized = provider._normalize_xml_empty_meta(raw)
@@ -513,7 +509,7 @@ def test_rss_meta_normalization_does_not_modify_cdata() -> None:
 )
 def test_rss_parser_rejects_item_urls_with_embedded_secrets(unsafe_url: str) -> None:
     raw = f"""<rss><channel><item><title>Unsafe link</title>
-      <link>{unsafe_url.replace('&', '&amp;')}</link>
+      <link>{unsafe_url.replace("&", "&amp;")}</link>
       <pubDate>Thu, 10 Sep 2026 12:00:00 GMT</pubDate>
     </item></channel></rss>"""
     provider = OfficialRSSProvider([], lookback_hours=48)
@@ -876,6 +872,55 @@ def test_live_universe_registers_approved_c5_2_sources_with_explicit_bounds() ->
         "nvidia",
     } <= entity_ids
 
+    assets = {asset["symbol"]: asset for asset in universe["assets"]}
+    assert {"000001.SS", "399001.SZ", "399006.SZ", "000688.SS", "000905.SS"} <= assets.keys()
+    assert assets["DGS2"]["provider"] == "fred"
+    assert "federal-reserve-all-releases-rss" in feeds
+
+
+def test_fred_yield_provider_builds_real_two_year_history(monkeypatch) -> None:
+    raw = """observation_date,DGS2
+2026-09-14,4.01
+2026-09-15,.
+2026-09-16,4.08
+2026-09-17,4.12
+"""
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["id"] == "DGS2"
+        return httpx.Response(200, text=raw, request=request)
+
+    monkeypatch.setattr(
+        "radar.providers.httpx.Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    provider = FredYieldProvider(
+        [
+            {
+                "symbol": "DGS2",
+                "name": "US 2Y Treasury Yield",
+                "region": "US",
+                "provider": "fred",
+            }
+        ]
+    )
+
+    batch = provider.collect(datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert batch.status is ProviderStatus.OK
+    assert batch.diagnostics == {
+        "market_items_expected": 1,
+        "market_items_collected": 1,
+        "market_items_failed": 0,
+    }
+    market = batch.markets[0]
+    assert market.symbol == "DGS2"
+    assert market.close == 4.12
+    assert market.previous_close == 4.08
+    assert market.change_pct == 0.98
+    assert [point.close for point in market.history] == [4.12, 4.08, 4.01]
+
 
 def test_yahoo_complete_collection_is_ok_despite_experimental_warning(monkeypatch) -> None:
     observed_at = datetime(2026, 9, 8, tzinfo=UTC)
@@ -955,8 +1000,7 @@ def test_bls_successful_response_without_rows_is_no_data(monkeypatch) -> None:
             "status": "REQUEST_SUCCEEDED",
             "Results": {
                 "series": [
-                    {"seriesID": series_id, "data": []}
-                    for series_id in BLSMacroProvider.series
+                    {"seriesID": series_id, "data": []} for series_id in BLSMacroProvider.series
                 ]
             },
         },

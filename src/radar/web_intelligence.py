@@ -418,7 +418,7 @@ def _coverage_gaps(
     for code, symbol, reason in required:
         aliases: tuple[str, ...] = (symbol,)
         if symbol == "US2Y":
-            aliases = ("US2Y", "^UST2Y", "2Y")
+            aliases = ("DGS2", "US2Y", "^UST2Y", "2Y")
         elif symbol == "US10Y":
             aliases = ("US10Y", "^TNX", "10Y")
         if _find_market(lookup, *aliases) is None:
@@ -537,7 +537,9 @@ def _china_intelligence(
             by_style,
             key=lambda style: (sum(by_style[style]) / len(by_style[style]), style),
         )
-    return ChinaIntelligence(indices, ordered, (up, down), dispersion, leadership, bool(ordered))
+    return ChinaIntelligence(
+        indices, ordered, (up, down), dispersion, leadership, bool(indices or ordered)
+    )
 
 
 def _multi_day(markets: tuple[MarketObservation, ...]) -> tuple[MultiDayContext, ...]:
@@ -721,7 +723,7 @@ def _china_capabilities(china: ChinaIntelligence) -> ChinaCapabilities:
         else (china.indices[0].provider if china.indices else None),
         core_indices=bool(china.indices),
         sectors=bool(china.sectors),
-        breadth=bool(china.sectors),
+        breadth=False,
         turnover=False,
         leadership=china.leadership is not None,
         unavailable=tuple(
@@ -729,7 +731,7 @@ def _china_capabilities(china: ChinaIntelligence) -> ChinaCapabilities:
             for name, available in (
                 ("core indices", bool(china.indices)),
                 ("sector ranking", bool(china.sectors)),
-                ("breadth", bool(china.sectors)),
+                ("market breadth", False),
                 ("turnover", False),
                 ("leadership", china.leadership is not None),
             )
@@ -792,8 +794,7 @@ def _priority_highlights(
                 title_en=signal.label,
                 detail_zh=signal.detail_zh,
                 detail_en=(
-                    f"{signal.label}; deterministic observation from "
-                    f"{' / '.join(signal.symbols)}."
+                    f"{signal.label}; deterministic observation from {' / '.join(signal.symbols)}."
                 ),
                 state=signal.state,
                 source_keys=signal.symbols,

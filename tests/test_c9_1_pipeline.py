@@ -244,7 +244,7 @@ def test_enabled_localization_failure_emits_english_product_and_safe_diagnostics
     assert delivered["subject"] == "Global Investment Radar — 2026-09-07"
     assert '<html lang="en">' in delivered["html"]
     assert "A focused global intelligence brief" in delivered["html"]
-    assert "Things That Matter" in delivered["html"]
+    assert "Today’s Focus" in delivered["html"]
     assert "中文本地化简报" not in delivered["html"]
     store = RadarStore(settings.database_url)
     with store.engine.connect() as connection:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import html
+import io
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -70,19 +72,13 @@ def _url_contains_sensitive_material(url: str) -> bool:
     if parts.username is not None or parts.password is not None:
         return True
     for key, _ in parse_qsl(parts.query, keep_blank_values=True):
-        normalized_key = "".join(
-            character for character in key.casefold() if character.isalnum()
-        )
-        if any(
-            fragment in normalized_key for fragment in SENSITIVE_URL_QUERY_FRAGMENTS
-        ):
+        normalized_key = "".join(character for character in key.casefold() if character.isalnum())
+        if any(fragment in normalized_key for fragment in SENSITIVE_URL_QUERY_FRAGMENTS):
             return True
     normalized_fragment = "".join(
         character for character in parts.fragment.casefold() if character.isalnum()
     )
-    return any(
-        fragment in normalized_fragment for fragment in SENSITIVE_URL_QUERY_FRAGMENTS
-    )
+    return any(fragment in normalized_fragment for fragment in SENSITIVE_URL_QUERY_FRAGMENTS)
 
 
 class ResponseTooLargeError(ValueError):
@@ -195,7 +191,7 @@ class DemoProvider:
             ("^NDX", "Nasdaq 100", "US", 24010.0, 23724.0, "USD"),
             ("^VIX", "VIX", "US", 18.4, 17.1, "USD"),
             ("^VXN", "VXN", "US", 20.6, 20.1, "USD"),
-            ("^UST2Y", "US 2Y Treasury Yield", "US", 3.82, 3.78, "%"),
+            ("DGS2", "US 2Y Treasury Yield", "US", 3.82, 3.78, "%"),
             ("^TNX", "US 10Y Treasury Yield", "US", 4.08, 4.02, "%"),
             ("^HSI", "Hang Seng", "HK", 24980.0, 25105.0, "HKD"),
             ("000300.SS", "CSI 300", "CN", 4720.0, 4682.5, "CNY"),
@@ -356,7 +352,7 @@ class YahooChartProvider:
     name = "experimental-yahoo-chart"
 
     def __init__(self, assets: list[dict[str, str]], timeout: float = 12.0) -> None:
-        self.assets = assets
+        self.assets = [asset for asset in assets if asset.get("provider", "yahoo") == "yahoo"]
         self.timeout = timeout
 
     def collect(self, now: datetime) -> CollectionBatch:
@@ -434,6 +430,87 @@ class YahooChartProvider:
                     close=float(close),
                 )
                 for ts, close in reversed(valid[-10:])
+            ),
+        )
+
+
+class FredYieldProvider:
+    """Official FRED CSV adapter for configured Treasury yield series."""
+
+    name = "fred-treasury-yields"
+    endpoint = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+
+    def __init__(self, assets: list[dict[str, str]], timeout: float = 15.0) -> None:
+        self.assets = [asset for asset in assets if asset.get("provider") == "fred"]
+        self.timeout = timeout
+
+    def collect(self, now: datetime) -> CollectionBatch:
+        observations: list[MarketObservation] = []
+        warnings: list[str] = []
+        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+            for asset in self.assets:
+                try:
+                    observations.append(self._fetch(client, asset))
+                except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+                    warnings.append(f"{asset['symbol']}: {type(exc).__name__}")
+        expected = len(self.assets)
+        if expected and not observations:
+            status = ProviderStatus.FAILED
+        elif len(observations) < expected:
+            status = ProviderStatus.DEGRADED
+        elif not observations:
+            status = ProviderStatus.NO_DATA
+        else:
+            status = ProviderStatus.OK
+        return CollectionBatch(
+            provider=self.name,
+            status=status,
+            markets=observations,
+            warnings=warnings,
+            diagnostics={
+                "market_items_expected": expected,
+                "market_items_collected": len(observations),
+                "market_items_failed": expected - len(observations),
+            },
+            collected_at=now,
+        )
+
+    def _fetch(self, client: httpx.Client, asset: dict[str, str]) -> MarketObservation:
+        symbol = asset["symbol"]
+        response = client.get(self.endpoint, params={"id": symbol})
+        response.raise_for_status()
+        rows = csv.DictReader(io.StringIO(response.text))
+        valid: list[tuple[datetime, float]] = []
+        for row in rows:
+            raw_value = row.get(symbol)
+            raw_date = row.get("observation_date")
+            if not raw_date or not raw_value or raw_value == ".":
+                continue
+            valid.append(
+                (
+                    datetime.fromisoformat(raw_date).replace(tzinfo=UTC),
+                    float(raw_value),
+                )
+            )
+        if len(valid) < 2:
+            raise ValueError("fewer than two valid yield observations")
+        previous_at, previous = valid[-2]
+        observed_at, latest = valid[-1]
+        return MarketObservation(
+            id=stable_id("market", f"{self.name}|{symbol}|{observed_at.isoformat()}"),
+            symbol=symbol,
+            name=asset["name"],
+            region=asset["region"],
+            previous_observed_at=previous_at,
+            observed_at=observed_at,
+            close=latest,
+            previous_close=previous,
+            change_pct=round((latest / previous - 1) * 100, 2),
+            currency="%",
+            provider=self.name,
+            history=tuple(
+                MarketHistoryPoint(observed_at=timestamp, close=value)
+                for timestamp, value in reversed(valid[-10:])
             ),
         )
 
@@ -524,11 +601,7 @@ class OfficialRSSProvider:
         *,
         name: str = "official-rss",
     ) -> None:
-        self.feeds = [
-            config
-            for feed in feeds
-            if (config := self._feed_config(feed)).enabled
-        ]
+        self.feeds = [config for feed in feeds if (config := self._feed_config(feed)).enabled]
         self.lookback = timedelta(hours=lookback_hours)
         self.timeout = timeout
         self.name = name
@@ -537,9 +610,7 @@ class OfficialRSSProvider:
         documents: list[SourceDocument] = []
         warnings: list[str] = []
         diagnostics = {key: 0 for key in RSS_DIAGNOSTIC_KEYS}
-        diagnostics.update(
-            {"feeds_succeeded": 0, "feeds_failed": 0, "oversize_responses": 0}
-        )
+        diagnostics.update({"feeds_succeeded": 0, "feeds_failed": 0, "oversize_responses": 0})
         headers = {"User-Agent": "GlobalInvestmentRadar/0.1 (public-research-pipeline)"}
         with httpx.Client(timeout=self.timeout, follow_redirects=True, headers=headers) as client:
             for feed in self.feeds:
@@ -559,14 +630,12 @@ class OfficialRSSProvider:
                     diagnostics["feeds_failed"] += 1
                     diagnostics["oversize_responses"] += 1
                     warnings.append(
-                        f"{feed.publisher}: feed collection failed "
-                        "(ResponseTooLargeError)."
+                        f"{feed.publisher}: feed collection failed (ResponseTooLargeError)."
                     )
                 except (httpx.HTTPError, ET.ParseError, ValueError) as exc:
                     diagnostics["feeds_failed"] += 1
                     warnings.append(
-                        f"{feed.publisher}: feed collection failed "
-                        f"({type(exc).__name__})."
+                        f"{feed.publisher}: feed collection failed ({type(exc).__name__})."
                     )
         if self.feeds and diagnostics["feeds_failed"] == len(self.feeds):
             status = ProviderStatus.FAILED
@@ -602,17 +671,13 @@ class OfficialRSSProvider:
         result = RSSParseResult()
         documents_by_url: dict[str, SourceDocument] = {}
         entries = [
-            element
-            for element in root.iter()
-            if self._local_name(element.tag) in {"item", "entry"}
+            element for element in root.iter() if self._local_name(element.tag) in {"item", "entry"}
         ]
         result.diagnostics["total_entries"] = len(entries)
         for item in entries:
             title = (self._child_text(item, "title") or "Untitled").strip()
             url = self._link(item)
-            description = (
-                self._child_text(item, "description", "summary", "content") or ""
-            )
+            description = self._child_text(item, "description", "summary", "content") or ""
             try:
                 published, timezone_was_inferred = self._published_at(
                     item,
@@ -638,9 +703,7 @@ class OfficialRSSProvider:
             if was_truncated:
                 result.diagnostics["content_truncated"] += 1
             native_id = (
-                self._child_text(item, "guid", "id")
-                if config.native_ids_immutable
-                else None
+                self._child_text(item, "guid", "id") if config.native_ids_immutable else None
             )
             metadata: dict[str, JsonValue] = {"feed_url": config.url}
             if timezone_was_inferred:
@@ -830,15 +893,16 @@ class OfficialRSSProvider:
         raise ValueError("response is not an RSS or Atom feed")
 
 
-def build_providers(
-    settings: Settings, universe: dict[str, Any]
-) -> list[IntelligenceProvider]:
+def build_providers(settings: Settings, universe: dict[str, Any]) -> list[IntelligenceProvider]:
     if settings.data_mode == "demo":
         return [DemoProvider()]
     providers: list[IntelligenceProvider] = [
         YahooChartProvider(universe["assets"]),
         BLSMacroProvider(),
     ]
+    fred = FredYieldProvider(universe["assets"])
+    if fred.assets:
+        providers.insert(1, fred)
     sec_config = universe.get("sec_filings")
     if isinstance(sec_config, dict) and sec_config.get("filers"):
         providers.append(

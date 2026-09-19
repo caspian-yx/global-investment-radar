@@ -10,6 +10,7 @@ from radar.audience import DeliveryMode, RecipientProfile
 from radar.briefing import DailyIntelligenceBrief
 from radar.config import PROJECT_ROOT
 from radar.domain import MarketObservation, content_hash, stable_id
+from radar.email_intelligence import EmailIntelligence, build_email_intelligence
 from radar.localization import C91_LABELS, LocalizedBriefingContent
 from radar.web_intelligence import build_web_intelligence
 
@@ -84,6 +85,7 @@ def report_context(
     markets: tuple[Any, ...] = (),
     assets: tuple[dict[str, Any], ...] = (),
     china_sectors: tuple[Any, ...] = (),
+    email_intelligence: EmailIntelligence | None = None,
 ) -> dict[str, Any]:
     localized_market_names = (
         {item.key: item.text for item in localized.market_names} if localized is not None else {}
@@ -95,6 +97,11 @@ def report_context(
     )
     localized_watch_items = (
         {item.key.removeprefix("watch:"): item for item in localized.watch_today}
+        if localized is not None
+        else {}
+    )
+    localized_under_radar = (
+        {item.key.removeprefix("under-radar:"): item for item in localized.under_radar}
         if localized is not None
         else {}
     )
@@ -120,6 +127,9 @@ def report_context(
         china_sectors=china_sectors,
     )
     web_report = replace(web_report, localization_unavailable=localized is None)
+    effective_email_intelligence = email_intelligence or build_email_intelligence(
+        briefing, effective_markets
+    )
     web_primary_zh = composition is None or composition.delivery_mode is not DeliveryMode.ENGLISH
     return {
         "briefing": briefing,
@@ -130,6 +140,7 @@ def report_context(
         "localized_market_names": localized_market_names,
         "localized_primary_stories": localized_primary_stories,
         "localized_watch_items": localized_watch_items,
+        "localized_under_radar": localized_under_radar,
         "localization_labels": C91_LABELS,
         "localized_primary": localized_primary,
         "include_english_reference": include_english_reference,
@@ -141,6 +152,7 @@ def report_context(
         else "Localization unavailable",
         "note_text": "\n\n".join(note_parts),
         "web_report": web_report,
+        "email_intelligence": effective_email_intelligence,
     }
 
 

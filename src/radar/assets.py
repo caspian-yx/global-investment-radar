@@ -19,7 +19,9 @@ _ASSETS: tuple[CanonicalAsset, ...] = (
     CanonicalAsset("RUSSELL2000", "罗素2000", "Russell 2000", "equity", ("^RUT", "RUSSELL2000")),
     CanonicalAsset("VIX", "VIX", "VIX", "volatility", ("^VIX", "VIX")),
     CanonicalAsset("VXN", "VXN", "VXN", "volatility", ("^VXN", "VXN")),
-    CanonicalAsset("US_2Y", "美国2年期国债", "US 2Y Treasury", "rate", ("^UST2Y", "US2Y", "2Y")),
+    CanonicalAsset(
+        "US_2Y", "美国2年期国债", "US 2Y Treasury", "rate", ("DGS2", "^UST2Y", "US2Y", "2Y")
+    ),
     CanonicalAsset("US_10Y", "美国10年期国债", "US 10Y Treasury", "rate", ("^TNX", "US10Y", "10Y")),
     CanonicalAsset("DXY", "美元指数", "DXY", "fx", ("DX-Y.NYB", "DXY")),
     CanonicalAsset("WTI", "WTI原油", "WTI Crude", "commodity", ("CL=F", "WTI")),

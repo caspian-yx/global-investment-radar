@@ -134,6 +134,15 @@ def test_no_ai_demo_pipeline_generates_html(tmp_path, monkeypatch) -> None:
     assert result.markets == 11
     assert result.macro == 3
     assert result.quality_status is ReportQualityStatus.HEALTHY
+    assert result.recall_funnel == {
+        "provider_items": 19,
+        "documents_before_dedup": 5,
+        "documents_after_dedup": 5,
+        "stories": 4,
+        "events": 8,
+    }
+    assert result.email_intelligence["focus_selected"] <= 5
+    assert result.email_intelligence["rule_version"] == "c8-email-v1"
     html = report.read_text(encoding="utf-8")
     assert "DEMO DATA" in html
     assert "AI is off" in html

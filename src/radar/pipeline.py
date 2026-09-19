@@ -26,6 +26,7 @@ from radar.domain import (
     stable_id,
 )
 from radar.email import RecipientEmailSender, build_email_sender
+from radar.email_intelligence import build_email_intelligence
 from radar.enrichment import run_structured_explanation_enrichment
 from radar.explanation import (
     build_cross_asset_context,
@@ -651,6 +652,11 @@ def _run_started_pipeline(
 
     is_demo = any(batch.is_demo for batch in batches)
     ai_test_data = any(item.is_test_data for item in analyses)
+    email_intelligence = build_email_intelligence(briefing, markets)
+    logger.info(
+        "C8 Email intelligence diagnostics=%s",
+        email_intelligence.diagnostics.model_dump(mode="json"),
+    )
     context = report_context(
         briefing=briefing,
         data_mode=settings.data_mode,
@@ -659,6 +665,7 @@ def _run_started_pipeline(
         localized=localized_content,
         markets=tuple(markets),
         assets=tuple(universe["assets"]),
+        email_intelligence=email_intelligence,
     )
     renderer = HtmlReportRenderer()
     html = renderer.render(context)
@@ -754,6 +761,14 @@ def _run_started_pipeline(
         email_status=email_status,
         elapsed_seconds=elapsed_seconds,
         provider_statuses=provider_statuses,
+        recall_funnel={
+            "provider_items": sum(item.item_count for item in provider_statuses),
+            "documents_before_dedup": int(document_dedupe.diagnostics["input_documents"]),
+            "documents_after_dedup": len(documents),
+            "stories": len(story_consolidation.stories),
+            "events": len(events),
+        },
+        email_intelligence=email_intelligence.diagnostics.model_dump(mode="json"),
     )
     details = {
         "documents": len(documents),
@@ -778,6 +793,7 @@ def _run_started_pipeline(
         "c9": briefing.diagnostics.model_dump(mode="json"),
         "c91": localization_diagnostics.model_dump(mode="json"),
         "c92": audience_details,
+        "c8_email": email_intelligence.diagnostics.model_dump(mode="json"),
     }
     logger.info(
         "Pipeline completed run_id=%s report_path=%s email_status=%s elapsed_seconds=%.3f",
