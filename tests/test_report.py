@@ -33,11 +33,14 @@ def test_c9_report_renders_complete_editorial_product() -> None:
     html = _render()
 
     for heading in (
-        "Overnight in 30 Seconds",
-        "Things That Matter",
-        "Market Reaction",
+        "Today’s Focus",
+        "What happened",
+        "Why it matters",
+        "Affected",
+        "Still unknown",
+        "Market Signals",
         "Under the Radar",
-        "Watch Today",
+        "What Matters Next",
         "Market Snapshot",
         "Sources &amp; Data Quality",
     ):
@@ -46,6 +49,25 @@ def test_c9_report_renders_complete_editorial_product() -> None:
     assert "AI is off" in html
     assert "policy material development" in html
     assert "It may reset policy expectations" in html
+    assert "Watch Today" not in html
+    assert "MUST_READ" not in html
+    assert "DETERMINISTIC_SIGNAL" not in html
+
+
+def test_email_projection_consolidates_related_market_signals() -> None:
+    from test_web_intelligence import _market
+
+    html = _render(
+        markets=(
+            _market("^VIX", "VIX", -4.08),
+            _market("^VXN", "VXN", -3.36),
+        )
+    )
+
+    assert html.count("波动率共同变化") == 1
+    assert "VIX -4.08%" in html
+    assert "VXN -3.36%" in html
+    assert "DRIVER_UNRESOLVED" not in html
 
 
 def test_report_is_mobile_safe_email_html_without_dashboard_dependencies() -> None:
@@ -170,7 +192,7 @@ def test_low_activity_and_demo_states_are_explicit_and_complete() -> None:
     )
 
     assert "Low-activity brief" in html
-    assert "No strong Story met today’s primary threshold" in html
-    assert "No validated linked reaction is available" in html
-    assert "No watch item was inferred" in html
+    assert "No item cleared freshness, value and evidence thresholds" in html
+    assert "No distinct market signal cleared" in html
+    assert "No validated future catalyst is available" in html
     assert "DEMO DATA" in html
