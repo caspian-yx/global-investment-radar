@@ -137,3 +137,22 @@ def test_us_index_divergence_is_one_reader_facing_signal() -> None:
     assert signal.symbols == ("^NDX", "^DJI")
     assert "Nasdaq 100 +0.02%" in signal.observed
     assert "Dow Jones -1.21%" in signal.observed
+
+
+def test_market_brief_is_concrete_bounded_and_uses_only_projection_facts() -> None:
+    briefing, _ = _compose()
+    projection = build_email_intelligence(
+        briefing,
+        markets=(
+            _market("^NDX", "Nasdaq 100", 0.02),
+            _market("^DJI", "Dow Jones", -1.21),
+            _market("CL=F", "WTI Crude Futures", -4.06),
+        ),
+    )
+
+    assert 1 <= len(projection.market_brief_zh) <= 4
+    brief = " ".join(projection.market_brief_zh)
+    assert "WTI Crude Futures -4.06%" in brief
+    assert "3 个市场观察" in brief
+    assert "确定性" not in brief
+    assert "DRIVER_UNRESOLVED" not in brief

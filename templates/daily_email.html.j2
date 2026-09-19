@@ -86,7 +86,7 @@
               </tr>
               {% endfor %}
             </table>
-            <div style="margin-top:8px;font-size:11px;line-height:1.55;color:#748596;">Top / Bottom · {{ web_report.china.sectors[0].sector }} / {{ web_report.china.sectors[-1].sector }} · Breadth {{ web_report.china.breadth[0] }}/{{ web_report.china.breadth[1] }} · Leadership {{ web_report.china.leadership or 'Unavailable' }} · Provider {{ web_report.china_capabilities.source or 'Unavailable' }}</div>
+            <div style="margin-top:8px;font-size:11px;line-height:1.55;color:#748596;">Top / Bottom · {{ web_report.china.sectors[0].sector }} / {{ web_report.china.sectors[-1].sector }} · Sector advance/decline {{ web_report.china.breadth[0] }}/{{ web_report.china.breadth[1] }} · Leadership {{ web_report.china.leadership or 'Unavailable' }} · Provider {{ web_report.china_capabilities.source or 'Unavailable' }}</div>
             {% else %}<div style="margin-top:10px;font-size:12px;line-height:1.55;color:#748596;">Sector ranking appears only when structured sector observations are available.</div>{% endif %}
             {% if web_report.china_capabilities.unavailable %}<div style="margin-top:7px;font-size:10px;line-height:1.5;color:#8A7352;">Unavailable · {{ web_report.china_capabilities.unavailable|join(' / ') }}</div>{% endif %}
           </td></tr>
@@ -122,7 +122,7 @@
           {% for item in web_report.decayed_stories %}{% set freshness = web_report.freshness.get(item.event_id) %}<tr><td style="padding:7px 28px 11px;font-size:12px;line-height:1.55;color:#40576C;"><strong style="color:#173149;">{{ item.headline }}</strong><br><span style="font-size:10px;color:#8A7352;">{{ freshness.decision if freshness else 'DEMOTE_SECONDARY' }} · {{ freshness.decay_reason if freshness else 'No new information gain.' }} · previous #{{ freshness.previous_rank if freshness else '?' }} → Secondary / Decayed</span></td></tr>{% endfor %}
           {% if not briefing.under_radar and not web_report.decayed_stories %}<tr><td style="padding:7px 28px 20px;color:#748596;font-size:12px;line-height:1.55;">No additional item cleared the conservative secondary threshold.</td></tr>{% endif %}
 
-          {% if web_report.ai_market_brief %}<tr><td style="padding:22px 28px;border-top:1px solid #E1E9EF;background:#10243B;color:#EAF2F8;"><div style="font-size:10px;line-height:1.4;letter-spacing:1.35px;text-transform:uppercase;color:#9FC5E3;font-weight:750;">{% if localized_primary %}AI 市场简报 · {% endif %}AI Market Brief</div>{% for paragraph in web_report.ai_market_brief %}<div style="margin-top:9px;font-size:13px;line-height:1.62;color:#EAF2F8;">{{ paragraph }}</div>{% endfor %}</td></tr>{% endif %}
+          <tr><td style="padding:22px 28px;border-top:1px solid #E1E9EF;background:#10243B;color:#EAF2F8;"><div style="font-size:10px;line-height:1.4;letter-spacing:1.35px;text-transform:uppercase;color:#9FC5E3;font-weight:750;">{% if localized_primary %}AI 市场简报 · {% endif %}AI Market Brief</div>{% for paragraph in (email_intelligence.market_brief_zh if localized_primary else email_intelligence.market_brief_en) %}<div style="margin-top:9px;font-size:13px;line-height:1.62;color:#EAF2F8;">{{ paragraph }}</div>{% endfor %}</td></tr>
           {% if note_text %}<tr><td style="padding:17px 28px;background:#EAF2F8;border-top:1px solid #D7E3EC;font-size:12px;line-height:1.6;color:#40576C;white-space:pre-line;"><strong>Editor's Note / 今日附言</strong><br>{{ note_text }}</td></tr>{% endif %}
 
           {% if include_english_reference %}

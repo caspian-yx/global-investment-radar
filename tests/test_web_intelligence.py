@@ -183,6 +183,8 @@ def test_china_sectors_are_ranked_and_leadership_is_deterministic() -> None:
     assert intelligence.china.breadth == (2, 1)
     assert intelligence.china.leadership == "Technology / Growth"
     assert intelligence.china.available is True
+    assert intelligence.china_capabilities.breadth is False
+    assert "market breadth" in intelligence.china_capabilities.unavailable
 
 
 def test_china_sector_observations_require_provider_provenance() -> None:

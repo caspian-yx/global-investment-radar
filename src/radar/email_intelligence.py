@@ -67,6 +67,8 @@ class EmailIntelligence(BaseModel):
     focus: tuple[EmailFocusItem, ...] = Field(max_length=5)
     market_signals: tuple[EmailMarketSignal, ...]
     next_catalysts: tuple[EmailCatalyst, ...] = Field(max_length=5)
+    market_brief_zh: tuple[str, ...] = Field(min_length=1, max_length=4)
+    market_brief_en: tuple[str, ...] = Field(min_length=1, max_length=4)
     diagnostics: EmailIntelligenceDiagnostics
 
     @model_validator(mode="after")
@@ -204,6 +206,42 @@ def _future_catalysts(
     return tuple(result[:5])
 
 
+def _market_brief(
+    markets: tuple[MarketObservation, ...],
+    focus: tuple[EmailFocusItem, ...],
+    signals: tuple[EmailMarketSignal, ...],
+    catalysts: tuple[EmailCatalyst, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if markets:
+        largest = max(markets, key=lambda item: (abs(item.change_pct), item.symbol))
+        zh = [
+            f"已验证 {len(markets)} 个市场观察；波动最大的是 "
+            f"{largest.name} {largest.change_pct:+.2f}%。"
+        ]
+        en = [
+            f"Across {len(markets)} validated market observations, the largest move was "
+            f"{largest.name} at {largest.change_pct:+.2f}%."
+        ]
+    else:
+        zh = ["当前没有足够的已验证市场观察形成市场概览。"]
+        en = ["Validated market observations are insufficient for a market overview."]
+    zh.append(
+        f"今日有 {len(focus)} 个新闻主题通过信息价值与证据门槛，"
+        f"另有 {len(signals)} 个独立市场信号。"
+    )
+    en.append(
+        f"{len(focus)} news themes cleared the information-value and evidence gates; "
+        f"{len(signals)} distinct market signals remain."
+    )
+    if catalysts:
+        zh.append(f"接下来有 {len(catalysts)} 个具备明确触发条件的催化剂值得跟踪。")
+        en.append(f"{len(catalysts)} next catalysts have explicit trigger conditions.")
+    else:
+        zh.append("当前没有得到验证的未来催化剂，不以旧新闻填充。")
+        en.append("No future catalyst is validated; stale news is not used as filler.")
+    return tuple(zh), tuple(en)
+
+
 def build_email_intelligence(
     briefing: DailyIntelligenceBrief,
     markets: Iterable[MarketObservation] = (),
@@ -229,15 +267,23 @@ def build_email_intelligence(
         focus.append(_focus_item(story))
         if len(focus) == 5:
             break
-    market_signals = _market_signals(tuple(markets), seen)
+    market_items = tuple(markets)
+    market_signals = _market_signals(market_items, seen)
     current_ids = {story.event_id for story in current}
+    catalysts = _future_catalysts(briefing, current_ids)
+    focus_items = tuple(focus)
+    brief_zh, brief_en = _market_brief(
+        market_items, focus_items, market_signals, catalysts
+    )
     unresolved = tuple(
         symbol for signal in market_signals for symbol in signal.symbols
     )
     return EmailIntelligence(
-        focus=tuple(focus),
+        focus=focus_items,
         market_signals=market_signals,
-        next_catalysts=_future_catalysts(briefing, current_ids),
+        next_catalysts=catalysts,
+        market_brief_zh=brief_zh,
+        market_brief_en=brief_en,
         diagnostics=EmailIntelligenceDiagnostics(
             candidates=len(briefing.primary_stories),
             focus_selected=len(focus),
