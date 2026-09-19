@@ -11,6 +11,7 @@ from radar.briefing import DailyIntelligenceBrief
 from radar.config import PROJECT_ROOT
 from radar.domain import content_hash
 from radar.localization import C91_LABELS, LocalizedBriefingContent
+from radar.web_intelligence import build_web_intelligence
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,7 @@ class RecipientComposition:
     is_test: bool = False
 
 
-class HtmlReportRenderer:
+class EmailHtmlReportRenderer:
     def __init__(self) -> None:
         self.environment = Environment(
             loader=FileSystemLoader(PROJECT_ROOT / "templates"),
@@ -45,6 +46,33 @@ class HtmlReportRenderer:
         return path, content_hash(html)
 
 
+class WebHtmlReportRenderer:
+    def __init__(self) -> None:
+        self.environment = Environment(
+            loader=FileSystemLoader(PROJECT_ROOT / "templates"),
+            autoescape=select_autoescape(
+                enabled_extensions=("html", "xml", "j2"),
+                default_for_string=True,
+            ),
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+
+    def render(self, context: dict[str, Any]) -> str:
+        template = self.environment.get_template("daily_web.html.j2")
+        return template.render(**context)
+
+    def write(self, html: str, output_dir: Path, report_date: str) -> tuple[Path, str]:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / f"global-investment-radar-{report_date}.html"
+        path.write_text(html, encoding="utf-8")
+        return path, content_hash(html)
+
+
+class HtmlReportRenderer(WebHtmlReportRenderer):
+    """Compatibility name for the saved daily Web Report renderer."""
+
+
 def report_context(
     *,
     briefing: DailyIntelligenceBrief,
@@ -53,6 +81,9 @@ def report_context(
     data_mode: str,
     localized: LocalizedBriefingContent | None = None,
     composition: RecipientComposition | None = None,
+    markets: tuple[Any, ...] = (),
+    assets: tuple[dict[str, Any], ...] = (),
+    china_sectors: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
     localized_market_names = (
         {item.key: item.text for item in localized.market_names} if localized is not None else {}
@@ -71,6 +102,12 @@ def report_context(
         )
         if part is not None and part.strip()
     )
+    web_report = build_web_intelligence(
+        briefing,
+        markets=markets,
+        assets=assets,
+        china_sectors=china_sectors,
+    )
     return {
         "briefing": briefing,
         "is_demo": is_demo,
@@ -83,6 +120,7 @@ def report_context(
         "include_english_reference": include_english_reference,
         "render_english_body": not localized_primary or include_english_reference,
         "note_text": "\n\n".join(note_parts),
+        "web_report": web_report,
     }
 
 
@@ -110,4 +148,4 @@ def render_recipient_email(
         localized=localized,
         composition=composition,
     )
-    return subject, HtmlReportRenderer().render(context), rendered_locale
+    return subject, EmailHtmlReportRenderer().render(context), rendered_locale

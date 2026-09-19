@@ -20,6 +20,7 @@ from radar.config import Settings
 from radar.domain import (
     CollectionBatch,
     MacroObservation,
+    MarketHistoryPoint,
     MarketObservation,
     ProviderStatus,
     SourceCategory,
@@ -213,6 +214,13 @@ class DemoProvider:
                 currency=currency,
                 provider=self.name,
                 is_demo=True,
+                history=tuple(
+                    MarketHistoryPoint(
+                        observed_at=observed - timedelta(days=offset),
+                        close=round(previous + (close - previous) * (6 - offset) / 6, 4),
+                    )
+                    for offset in range(7)
+                ),
             )
             for symbol, name, region, close, previous, currency in market_specs
         ]
@@ -417,6 +425,13 @@ class YahooChartProvider:
             change_pct=round((float(latest) / float(previous) - 1) * 100, 2),
             currency=currency,
             provider=self.name,
+            history=tuple(
+                MarketHistoryPoint(
+                    observed_at=datetime.fromtimestamp(ts, tz=UTC),
+                    close=float(close),
+                )
+                for ts, close in reversed(valid[-10:])
+            ),
         )
 
 

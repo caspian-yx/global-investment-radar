@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="{% if localized_primary %}zh-CN{% else %}en{% endif %}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if localized_primary %}全球投资雷达{% else %}Global Investment Radar{% endif %} — {{ briefing.report_date }}</title>
+  <style>
+    :root {
+      --ink: #101114;
+      --muted: #656b74;
+      --hair: rgba(30, 35, 45, .11);
+      --glass: rgba(255, 255, 255, .55);
+      --up: #a44950;
+      --down: #18735f;
+      --blue: #3974e8;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      font-variant-numeric: tabular-nums;
+      background: radial-gradient(ellipse at 8% 3%, rgba(145,190,255,.38), transparent 31%), radial-gradient(ellipse at 92% 13%, rgba(211,177,255,.30), transparent 29%), radial-gradient(ellipse at 73% 53%, rgba(139,226,214,.22), transparent 34%), linear-gradient(138deg, #f8fbff 0%, #eef3f8 38%, #f5f2f8 69%, #fbfaf7 100%);
+      background-attachment: fixed;
+    }
+    .web-shell { max-width: 1120px; margin: auto; padding: 28px 24px 70px; }
+    .glass {
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+      background: linear-gradient(142deg, rgba(255,255,255,.69) 0%, rgba(255,255,255,.43) 44%, rgba(240,246,255,.30) 100%);
+      border: 1px solid rgba(255,255,255,.78);
+      border-radius: 34px;
+      box-shadow: 0 22px 65px rgba(48,62,85,.10), 0 3px 12px rgba(63,76,96,.045), inset 0 1px 1px rgba(255,255,255,.96), inset 1px 0 0 rgba(255,255,255,.50), inset 0 -1px 0 rgba(124,149,184,.12);
+      backdrop-filter: blur(38px) saturate(165%) contrast(102%);
+      -webkit-backdrop-filter: blur(38px) saturate(165%) contrast(102%);
+    }
+    .glass::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1; background: radial-gradient(ellipse at 4% 0%, rgba(255,255,255,.92), transparent 27%), radial-gradient(ellipse at 99% 4%, rgba(170,205,255,.30), transparent 24%); mix-blend-mode: screen; }
+    .nav { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-radius: 26px; }
+    .brand { font-weight: 650; letter-spacing: -.02em; }
+    .pill { padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,.48); color: #515761; font-size: 11px; border: 1px solid rgba(255,255,255,.65); }
+    .nav-meta { display: flex; gap: 6px; }
+    .hero { padding: 68px 24px 42px; text-align: center; }
+    .eyebrow { color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .14em; text-transform: uppercase; }
+    .hero h1 { max-width: 850px; margin: 12px auto 15px; font-size: 58px; line-height: 1.02; letter-spacing: -.06em; font-weight: 680; }
+    .hero p { max-width: 760px; margin: auto; color: #454c56; font-size: 19px; line-height: 1.55; }
+    .section { margin-top: 42px; }
+    .section-title { display: flex; justify-content: space-between; align-items: end; padding: 0 5px 13px; }
+    .section-title h2 { margin: 5px 0 0; font-size: 29px; letter-spacing: -.045em; }
+    .regime { display: grid; grid-template-columns: 1.45fr .8fr; gap: 32px; padding: 25px 27px; }
+    .regime h2 { margin: 5px 0 9px; font-size: 25px; letter-spacing: -.035em; }
+    .regime p { margin: 0; color: #555c65; font-size: 14px; line-height: 1.7; }
+    .signals { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .signal { padding: 13px; border: 1px solid rgba(255,255,255,.64); border-radius: 18px; background: rgba(255,255,255,.42); }
+    .signal small { display: block; color: #747b85; font-size: 9px; letter-spacing: .08em; }
+    .signal b { display: block; margin-top: 5px; font-size: 12px; }
+    .market-strip { display: grid; grid-template-columns: repeat(6, 1fr); margin-top: 12px; padding: 8px; }
+    .quote { padding: 14px; border-right: 1px solid var(--hair); }
+    .quote:last-child { border-right: 0; }
+    .quote small { color: var(--muted); font-size: 10px; }
+    .quote strong { display: block; margin-top: 5px; font-size: 18px; }
+    .positive { color: var(--up); }
+    .negative { color: var(--down); }
+    .stories { padding: 10px 24px; }
+    .story { display: grid; grid-template-columns: 48px 1fr 190px; gap: 18px; padding: 22px 0; border-bottom: 1px solid var(--hair); }
+    .story:last-child { border-bottom: 0; }
+    .story-index { color: #9298a0; font-size: 23px; font-weight: 300; }
+    .story h3 { margin: 0 0 7px; font-size: 18px; letter-spacing: -.025em; }
+    .story p { margin: 3px 0; color: #555d66; font-size: 13px; line-height: 1.65; }
+    .story-side { color: #656c75; font-size: 11px; line-height: 1.65; }
+    .sparkline { width: 100%; height: 42px; margin-top: 9px; }
+    .sparkline polyline { fill: none; stroke: var(--blue); stroke-width: 2; vector-effect: non-scaling-stroke; }
+    .footer { padding: 40px 0 0; color: #808792; font-size: 10px; text-align: center; }
+    a:focus-visible { outline: 3px solid rgba(57,116,232,.55); outline-offset: 4px; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; transform: none !important; } }
+    @media (max-width: 760px) { .web-shell { padding: 16px 12px 48px; } .hero { padding-top: 50px; } .hero h1 { font-size: 39px; } .regime { grid-template-columns: 1fr; } .market-strip { grid-template-columns: repeat(3, 1fr); } .story { grid-template-columns: 34px 1fr; } .story-side { grid-column: 2; } .nav-meta .pill:first-child { display: none; } }
+  </style>
+</head>
+<body>
+  <main class="web-shell">
+    <nav class="nav glass" aria-label="Report header">
+      <div class="brand">{% if localized_primary %}全球投资雷达{% else %}Global Investment Radar{% endif %}</div>
+      <div class="nav-meta"><span class="pill">{{ briefing.report_date }}</span><span class="pill">Evidence-first</span></div>
+    </nav>
+
+    {% if is_demo %}<div class="glass" style="margin-top:12px;padding:12px 18px;color:#785A18;font-size:12px;"><strong>DEMO DATA</strong> · Synthetic fixtures for pipeline validation; not investment research.</div>{% endif %}
+    {% if ai_test_data %}<div class="glass" style="margin-top:12px;padding:12px 18px;color:#7A2E2E;font-size:12px;"><strong>TEST AI OUTPUT</strong> · Any AI-assisted prose is synthetic.</div>{% elif briefing.ai_status == 'disabled' %}<div class="glass" style="margin-top:12px;padding:12px 18px;color:#40566F;font-size:12px;"><strong>AI is off.</strong> Selection, ordering and explanations remain complete and deterministic.</div>{% elif briefing.ai_status in ['failed', 'partial'] %}<div class="glass" style="margin-top:12px;padding:12px 18px;color:#785A18;font-size:12px;"><strong>AI enrichment {{ briefing.ai_status }}.</strong> The deterministic brief remains complete.</div>{% endif %}
+    {% if briefing.data_quality.status == 'INSUFFICIENT' %}<div class="glass" style="margin-top:12px;padding:12px 18px;color:#7A2E2E;font-size:12px;"><strong>INSUFFICIENT DATA</strong> · This is a diagnostic brief; the normal delivery quality gate will reject it.</div>{% elif briefing.data_quality.status == 'DEGRADED' %}<div class="glass" style="margin-top:12px;padding:12px 18px;color:#785A18;font-size:12px;"><strong>DEGRADED DATA</strong> · Read conclusions with additional caution.</div>{% endif %}
+
+    <header class="hero">
+      <div class="eyebrow">Daily Intelligence · {{ briefing.view_name }}</div>
+      <h1>{% if localized_primary %}全球投资雷达{% else %}Global Investment Radar{% endif %}</h1>
+      <p>{% if localized_primary %}基于已验证证据的全球市场情报。{% else %}A structured daily view of what mattered, what moved, and what remains unresolved.{% endif %}</p>
+    </header>
+
+    <section class="section" id="market-regime">
+      <div class="section-title"><div><div class="eyebrow">Market Regime</div><h2>Market Regime</h2></div><div class="eyebrow">Observed intelligence</div></div>
+      <div class="regime glass">
+        <div><h2>{{ web_report.regime.label }}</h2><p>{% if web_report.abnormal_moves %}{{ web_report.abnormal_moves[0].name }} moved {{ '%+.2f'|format(web_report.abnormal_moves[0].change_pct) }}%; deterministic coverage audit remains evidence-gated.{% elif briefing.overnight %}{{ briefing.overnight[0].text }}{% else %}No strong Story met today’s primary threshold.{% endif %}</p></div>
+        <div class="signals"><div class="signal"><small>PRIMARY STORIES</small><b>{{ briefing.primary_stories|length }}</b></div><div class="signal"><small>WATCH TODAY</small><b>{{ briefing.watch_today|length }}</b></div><div class="signal"><small>ABNORMAL MOVES</small><b>{{ web_report.abnormal_moves|length }}</b></div><div class="signal"><small>DATA QUALITY</small><b>{{ briefing.data_quality.status }}</b></div></div>
+      </div>
+    </section>
+
+    <section class="section" id="global-market-strip">
+      <div class="section-title"><div><div class="eyebrow">Global Market Strip · Market Snapshot</div><h2>Markets, distilled.</h2></div></div>
+      <div class="market-strip glass">
+        {% for item in web_report.market_observations[:8] %}<div class="quote"><small>{{ item.name }}</small><strong class="{% if item.change_pct >= 0 %}positive{% else %}negative{% endif %}">{{ '%+.2f'|format(item.change_pct) }}%</strong></div>{% else %}{% for group in web_report.market_snapshot %}{% for item in group.items[:6] %}<div class="quote"><small>{{ item.name }}</small><strong class="{% if item.change_pct >= 0 %}positive{% else %}negative{% endif %}">{{ '%+.2f'|format(item.change_pct) }}%</strong></div>{% endfor %}{% endfor %}{% endfor %}
+      </div>
+      <div class="glass" style="margin-top:10px;padding:16px 18px;overflow:auto;"><div class="eyebrow">Recent trend · 1D / 5D / 7D</div><table style="width:100%;margin-top:8px;border-collapse:collapse;font-size:12px;"><tbody>{% for item in web_report.multi_day[:8] %}<tr><td style="padding:6px 0;border-bottom:1px solid var(--hair);">{{ item.name }}</td><td style="padding:6px 0;border-bottom:1px solid var(--hair);text-align:right;" class="{% if item.change_1d >= 0 %}positive{% else %}negative{% endif %}">{{ '%+.2f'|format(item.change_1d) }}%</td><td style="padding:6px 0;border-bottom:1px solid var(--hair);text-align:right;color:#737983;">{% if item.change_5d is not none %}{{ '%+.2f'|format(item.change_5d) }}%{% else %}—{% endif %}</td><td style="padding:6px 0;border-bottom:1px solid var(--hair);text-align:right;color:#737983;">{% if item.change_7d is not none %}{{ '%+.2f'|format(item.change_7d) }}%{% else %}—{% endif %}</td></tr>{% else %}<tr><td style="padding:7px 0;color:#737983;">Multi-day history unavailable.</td></tr>{% endfor %}</tbody></table></div>
+    </section>
+
+    <section class="section" id="volatility-rates">
+      <div class="section-title"><div><div class="eyebrow">Volatility &amp; Rates</div><h2>Risk pulse</h2></div><div class="eyebrow">Visual budget {{ web_report.major_visuals|length }} / 2</div></div>
+      <div class="glass" style="padding:22px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+        {% for symbol, label in [('^VIX', 'VIX'), ('^VXN', 'VXN'), ('US10Y', 'US 10Y'), ('CL=F', 'WTI')] %}<div><div class="eyebrow">{{ label }}</div>{% if web_report.sparkline_points.get(symbol) %}<svg class="sparkline" viewBox="0 0 120 42" role="img" aria-label="{{ label }} 7-day sparkline"><polyline points="{{ web_report.sparkline_points.get(symbol) }}" /></svg>{% else %}<div style="padding-top:16px;color:#7a818b;font-size:11px;">History unavailable</div>{% endif %}</div>{% endfor %}
+      </div>
+    </section>
+
+    <section class="section" id="overnight-intelligence">
+      <div class="section-title"><div><div class="eyebrow">Overnight Intelligence · Things That Matter</div><h2>What actually mattered.</h2></div></div>
+      <div class="stories glass">
+        {% for story in web_report.primary_stories %}{% set localized_story = localized.primary_stories[loop.index0] if localized_primary and localized else none %}{% set freshness = web_report.freshness.get(story.event_id) %}<article class="story"><div class="story-index">{{ '%02d'|format(loop.index) }}</div><div><h3>{{ localized_story.headline if localized_story else story.headline }}</h3><p>{{ localized_story.why_it_matters if localized_story else web_report.story_explanations.get(story.event_id, story.why_it_matters) }}</p>{% for reaction in story.market_reactions %}<p><strong>Market reaction</strong> · {{ reaction.summary }}{% if reaction.uncertainty %}<br>{{ reaction.uncertainty }}{% endif %}</p>{% endfor %}{% if not story.market_reactions %}<p>Market reaction · No validated linked reaction is available for this selected Story.</p>{% endif %}{% if story.sources %}<p>{% for source in story.sources %}<a href="{{ source.url }}">{{ source.publisher }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}</div><div class="story-side">{{ story.priority_band.value|replace('_', ' ') }}<br>{{ story.evidence_label }}<br>{{ freshness.band.value if freshness else 'UNKNOWN' }}</div></article>{% else %}<p>No strong Story met today’s primary threshold.</p><p>Market reaction · No validated linked reaction is available for today’s selected Stories.</p>{% endfor %}
+      </div>
+    </section>
+
+    <section class="section" id="china-a-shares"><div class="section-title"><div><div class="eyebrow">China / A-Shares</div><h2>Sector leadership</h2></div><div class="eyebrow">{{ 'Available' if web_report.china.available else 'Coverage limited' }}</div></div><div class="glass" style="padding:22px;">{% if web_report.china.available %}<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:18px;">{% for item in web_report.china.indices[:3] %}<div class="signal"><small>{{ item.name }}</small><b class="{% if item.change_pct >= 0 %}positive{% else %}negative{% endif %}">{{ '%+.2f'|format(item.change_pct) }}%</b></div>{% endfor %}</div><div class="eyebrow">RANK · SECTOR · 1D</div>{% set max_sector_move = web_report.china.sectors[0].change_1d|abs %}{% for item in web_report.china.sectors[:8] %}<div style="display:grid;grid-template-columns:32px 1fr 1fr 72px;gap:9px;align-items:center;padding:9px 0;border-bottom:1px solid var(--hair);font-size:13px;"><span style="color:#858b94;">{{ '%02d'|format(loop.index) }}</span><b>{{ item.sector }}</b><span style="height:6px;background:rgba(90,95,105,.08);border-radius:99px;overflow:hidden;"><i style="display:block;height:100%;width:{{ ((item.change_1d|abs / max_sector_move) * 100) if max_sector_move else 0 }}%;background:linear-gradient(90deg,rgba(179,60,57,.48),rgba(179,60,57,.95));border-radius:99px;"></i></span><b class="{% if item.change_1d >= 0 %}positive{% else %}negative{% endif %}">{{ '%+.2f'|format(item.change_1d) }}%</b></div>{% endfor %}<p>Market breadth · {{ web_report.china.breadth[0] }} ↑ / {{ web_report.china.breadth[1] }} ↓ · Dispersion {{ '%.2f'|format(web_report.china.dispersion) }}%</p><p>Leadership · {{ web_report.china.leadership or 'Unresolved' }}</p>{% else %}<p>China index coverage is rendered from the validated market snapshot. Sector ranking appears only when structured sector observations are available.</p>{% endif %}</div></section>
+    <section class="section" id="cross-asset"><div class="section-title"><div><div class="eyebrow">Cross-Asset Intelligence</div><h2>Transmission map</h2></div></div><div class="glass" style="padding:22px;">{% for item in web_report.cross_asset_signals %}<p><strong>{{ item.code }}</strong> · {{ item.label }}<br><span style="color:#6b727c;">{{ item.state.value }} · {{ item.symbols|join(' / ') }}</span></p>{% else %}<p>Signals are deterministic candidates; causal interpretation remains evidence-gated.</p>{% endfor %}{% for move in web_report.abnormal_moves %}<p><strong>{{ move.name }}</strong> · {{ '%+.2f'|format(move.change_pct) }}%<br><span style="color:#6b727c;">{{ move.state.value }} · {{ move.reason }}</span></p>{% endfor %}{% for gap in web_report.coverage_gaps %}<p><strong>{{ gap.code }}</strong> · {{ gap.reason }}</p>{% endfor %}</div></section>
+    <section class="section" id="watch-next"><div class="section-title"><div><div class="eyebrow">Watch Today · What Matters Next</div><h2>Keep watching the evidence.</h2></div></div><div class="glass" style="padding:22px;"><h3>Next 24 hours</h3>{% for item in web_report.next_horizons.next_24_hours %}{% set localized_watch = localized.watch_today[loop.index0] if localized_primary and localized else none %}<p><strong>{{ item.title }}</strong><br>{{ localized_watch.text if localized_watch else item.text }}<br><span style="color:#6b727c;">Confirm: {{ item.confirmation }} · Invalidate: {{ item.invalidation }}</span></p>{% else %}<p>No watch item was inferred; the report does not invent future catalysts.</p>{% endfor %}<h3>Next 7 days</h3>{% for item in web_report.next_horizons.next_7_days %}<p><strong>{{ item.title }}</strong><br>{{ item.text }}</p>{% else %}<p>No validated future-event calendar data is available.</p>{% endfor %}</div></section>
+    <section class="section" id="secondary"><div class="section-title"><div><div class="eyebrow">Secondary Developments</div><h2>Under the Radar</h2></div></div><div class="glass" style="padding:22px;">{% for item in briefing.under_radar %}<p><strong>{{ item.headline }}</strong><br>{{ item.note }}{% if item.sources %}<br>{% for source in item.sources %}<a href="{{ source.url }}">{{ source.publisher }}</a>{% if not loop.last %} · {% endif %}{% endfor %}{% endif %}</p>{% endfor %}{% for item in web_report.decayed_stories %}<p><strong>{{ item.headline }}</strong><br>Headline decay · retained historically, removed from current headline eligibility.{% if item.sources %}<br>{% for source in item.sources %}<a href="{{ source.url }}">{{ source.publisher }}</a>{% if not loop.last %} · {% endif %}{% endfor %}{% endif %}</p>{% endfor %}{% if not briefing.under_radar and not web_report.decayed_stories %}<p>No additional item cleared the conservative secondary threshold.</p>{% endif %}</div></section>
+    <section class="section" id="sources"><div class="section-title"><div><div class="eyebrow">Sources &amp; Data Quality</div><h2>Trust state</h2></div></div><div class="glass" style="padding:22px;"><p>{{ briefing.data_quality.status }} · {{ briefing.data_quality.documents }} documents · {{ briefing.data_quality.events }} Events · {{ briefing.data_quality.markets }} market observations · {{ briefing.data_quality.sources_healthy }}/{{ briefing.data_quality.sources_total }} sources healthy.</p></div></section>
+    <div class="footer">GLOBAL INVESTMENT RADAR · LIQUID GLASS WEB REPORT · EVIDENCE-FIRST INTELLIGENCE</div>
+  </main>
+</body>
+</html>
