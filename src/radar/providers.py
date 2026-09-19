@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import html
+import io
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -356,7 +358,7 @@ class YahooChartProvider:
     name = "experimental-yahoo-chart"
 
     def __init__(self, assets: list[dict[str, str]], timeout: float = 12.0) -> None:
-        self.assets = assets
+        self.assets = [asset for asset in assets if asset.get("provider", "yahoo") == "yahoo"]
         self.timeout = timeout
 
     def collect(self, now: datetime) -> CollectionBatch:
@@ -434,6 +436,89 @@ class YahooChartProvider:
                     close=float(close),
                 )
                 for ts, close in reversed(valid[-10:])
+            ),
+        )
+
+
+class FredYieldProvider:
+    """Official FRED CSV adapter for configured Treasury yield series."""
+
+    name = "fred-treasury-yields"
+    endpoint = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+
+    def __init__(self, assets: list[dict[str, str]], timeout: float = 15.0) -> None:
+        self.assets = [asset for asset in assets if asset.get("provider") == "fred"]
+        self.timeout = timeout
+
+    def collect(self, now: datetime) -> CollectionBatch:
+        observations: list[MarketObservation] = []
+        warnings: list[str] = []
+        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+            for asset in self.assets:
+                try:
+                    observations.append(self._fetch(client, asset))
+                except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+                    warnings.append(f"{asset['symbol']}: {type(exc).__name__}")
+        expected = len(self.assets)
+        if expected and not observations:
+            status = ProviderStatus.FAILED
+        elif len(observations) < expected:
+            status = ProviderStatus.DEGRADED
+        elif not observations:
+            status = ProviderStatus.NO_DATA
+        else:
+            status = ProviderStatus.OK
+        return CollectionBatch(
+            provider=self.name,
+            status=status,
+            markets=observations,
+            warnings=warnings,
+            diagnostics={
+                "market_items_expected": expected,
+                "market_items_collected": len(observations),
+                "market_items_failed": expected - len(observations),
+            },
+            collected_at=now,
+        )
+
+    def _fetch(
+        self, client: httpx.Client, asset: dict[str, str]
+    ) -> MarketObservation:
+        symbol = asset["symbol"]
+        response = client.get(self.endpoint, params={"id": symbol})
+        response.raise_for_status()
+        rows = csv.DictReader(io.StringIO(response.text))
+        valid: list[tuple[datetime, float]] = []
+        for row in rows:
+            raw_value = row.get(symbol)
+            raw_date = row.get("observation_date")
+            if not raw_date or not raw_value or raw_value == ".":
+                continue
+            valid.append(
+                (
+                    datetime.fromisoformat(raw_date).replace(tzinfo=UTC),
+                    float(raw_value),
+                )
+            )
+        if len(valid) < 2:
+            raise ValueError("fewer than two valid yield observations")
+        previous_at, previous = valid[-2]
+        observed_at, latest = valid[-1]
+        return MarketObservation(
+            id=stable_id("market", f"{self.name}|{symbol}|{observed_at.isoformat()}"),
+            symbol=symbol,
+            name=asset["name"],
+            region=asset["region"],
+            previous_observed_at=previous_at,
+            observed_at=observed_at,
+            close=latest,
+            previous_close=previous,
+            change_pct=round((latest / previous - 1) * 100, 2),
+            currency="%",
+            provider=self.name,
+            history=tuple(
+                MarketHistoryPoint(observed_at=timestamp, close=value)
+                for timestamp, value in reversed(valid[-10:])
             ),
         )
 
@@ -839,6 +924,9 @@ def build_providers(
         YahooChartProvider(universe["assets"]),
         BLSMacroProvider(),
     ]
+    fred = FredYieldProvider(universe["assets"])
+    if fred.assets:
+        providers.insert(1, fred)
     sec_config = universe.get("sec_filings")
     if isinstance(sec_config, dict) and sec_config.get("filers"):
         providers.append(

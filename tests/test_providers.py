@@ -23,6 +23,7 @@ from radar.ingestion import deduplicate_source_documents
 from radar.providers import (
     BLSMacroProvider,
     DemoProvider,
+    FredYieldProvider,
     OfficialRSSProvider,
     RSSFeedConfig,
     YahooChartProvider,
@@ -875,6 +876,55 @@ def test_live_universe_registers_approved_c5_2_sources_with_explicit_bounds() ->
         "apple",
         "nvidia",
     } <= entity_ids
+
+    assets = {asset["symbol"]: asset for asset in universe["assets"]}
+    assert {"000001.SS", "399001.SZ", "399006.SZ", "000688.SS", "000905.SS"} <= assets.keys()
+    assert assets["DGS2"]["provider"] == "fred"
+    assert "federal-reserve-all-releases-rss" in feeds
+
+
+def test_fred_yield_provider_builds_real_two_year_history(monkeypatch) -> None:
+    raw = """observation_date,DGS2
+2026-09-14,4.01
+2026-09-15,.
+2026-09-16,4.08
+2026-09-17,4.12
+"""
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["id"] == "DGS2"
+        return httpx.Response(200, text=raw, request=request)
+
+    monkeypatch.setattr(
+        "radar.providers.httpx.Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    provider = FredYieldProvider(
+        [
+            {
+                "symbol": "DGS2",
+                "name": "US 2Y Treasury Yield",
+                "region": "US",
+                "provider": "fred",
+            }
+        ]
+    )
+
+    batch = provider.collect(datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert batch.status is ProviderStatus.OK
+    assert batch.diagnostics == {
+        "market_items_expected": 1,
+        "market_items_collected": 1,
+        "market_items_failed": 0,
+    }
+    market = batch.markets[0]
+    assert market.symbol == "DGS2"
+    assert market.close == 4.12
+    assert market.previous_close == 4.08
+    assert market.change_pct == 0.98
+    assert [point.close for point in market.history] == [4.12, 4.08, 4.01]
 
 
 def test_yahoo_complete_collection_is_ok_despite_experimental_warning(monkeypatch) -> None:
