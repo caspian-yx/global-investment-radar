@@ -41,6 +41,31 @@ def test_web_and_email_renderers_have_separate_presentation_contracts() -> None:
     assert "<script" not in email.casefold()
 
 
+def test_web_interaction_contract_has_real_ranges_tooltips_and_fail_closed_hooks() -> None:
+    briefing, _ = _compose()
+    market = _market("^VIX", "VIX", 4.0, history=(1, 2, 3, 4, 5, 6, 7, 8))
+    html = WebHtmlReportRenderer().render(
+        report_context(
+            briefing=briefing,
+            is_demo=False,
+            ai_test_data=False,
+            data_mode="live",
+            markets=(market,),
+        )
+    )
+
+    assert 'data-range="1D"' in html
+    assert 'data-range="1W"' in html
+    assert 'data-range="1M"' in html
+    assert 'data-points=' in html
+    assert 'data-sparkline="' in html
+    assert "pointermove" in html
+    assert "pointerleave" in html
+    assert "prefers-reduced-motion:reduce" in html
+    assert "<noscript>" in html
+    assert "scroll-snap-type:x mandatory" in html
+
+
 def test_china_indices_render_even_when_sector_coverage_is_unavailable() -> None:
     briefing, _ = _compose()
     html = WebHtmlReportRenderer().render(

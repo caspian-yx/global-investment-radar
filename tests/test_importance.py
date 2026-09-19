@@ -455,6 +455,47 @@ def test_freshness_is_bounded_and_other_is_conservative() -> None:
     assert ImportanceReason.OTHER_CONSERVATIVE in score.importance_reason_codes
 
 
+def test_generic_story_lifecycle_freshness_outranks_same_authority_repeat() -> None:
+    source = _document(
+        "lifecycle-source",
+        title="A material market intelligence update",
+        content="A material market intelligence update with unchanged facts.",
+        publisher="Primary Publisher",
+    )
+    fresh = score_event(
+        _event(
+            "lifecycle-fresh",
+            event_type=EventType.MACRO,
+            title=source.title,
+            source_document_ids=[source.id],
+            occurred_at=NOW - timedelta(hours=4),
+        ),
+        None,
+        [source],
+        ViewProfile(id="global", name="Global"),
+        UNIVERSE,
+        NOW,
+    )
+    repeated = score_event(
+        _event(
+            "lifecycle-repeat",
+            event_type=EventType.MACRO,
+            title=source.title,
+            source_document_ids=[source.id],
+            occurred_at=NOW - timedelta(days=4),
+        ),
+        None,
+        [source],
+        ViewProfile(id="global", name="Global"),
+        UNIVERSE,
+        NOW,
+    )
+
+    ranked = rank_scores([repeated, fresh])
+    assert fresh.importance_score > repeated.importance_score
+    assert [item.event_id for item in ranked] == ["lifecycle-fresh", "lifecycle-repeat"]
+
+
 def test_other_cannot_become_material_from_scope_or_corroboration_alone() -> None:
     first = _document(
         "other-official",

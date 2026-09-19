@@ -84,3 +84,45 @@ def test_stale_story_is_demoted_to_secondary_without_mutating_briefing() -> None
     assert tuple(item.event_id for item in intelligence.primary_stories) == original_order[:-1]
     assert intelligence.decayed_stories[0].event_id == stale.event_id
     assert tuple(item.event_id for item in updated.primary_stories) == original_order
+
+
+def test_golden_report_exposes_generic_freshness_decision_and_rank_change() -> None:
+    briefing, _ = _compose(report_date="2026-09-17")
+    current = datetime(2026, 9, 17, 12, tzinfo=UTC)
+    stale = briefing.primary_stories[-1].model_copy(
+        update={"occurred_at": datetime(2026, 9, 16, 12, tzinfo=UTC)}
+    )
+    updated = briefing.model_copy(
+        update={
+            "primary_stories": (
+                *tuple(
+                    item.model_copy(update={"occurred_at": current})
+                    for item in briefing.primary_stories[:-1]
+                ),
+                stale,
+            ),
+            "overnight": (
+                *briefing.overnight[:-1],
+                briefing.overnight[-1].model_copy(update={"event_id": stale.event_id}),
+            ),
+        }
+    )
+    markets = (
+        _market("CL=F", "WTI Crude Futures", -4.06, history=(70, 71, 72, 73, 74, 75, 76, 77)),
+    )
+    html = WebHtmlReportRenderer().render(
+        report_context(
+            briefing=updated,
+            is_demo=False,
+            ai_test_data=False,
+            data_mode="live",
+            markets=markets,
+        )
+    )
+
+    assert "DEMOTE_SECONDARY" in html
+    assert "Day+1" in html
+    assert "Secondary / Decayed" in html
+    assert "previous #" in html
+    assert "WTI Crude Futures" in html
+    assert tuple(item.event_id for item in updated.primary_stories)[-1] == stale.event_id

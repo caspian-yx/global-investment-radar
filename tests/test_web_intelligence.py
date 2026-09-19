@@ -70,6 +70,45 @@ def test_web_intelligence_marks_stale_stories_ineligible_for_headline() -> None:
     assert assessment.headline_eligible is False
 
 
+def test_story_lifecycle_is_generic_and_material_follow_up_reactivates() -> None:
+    briefing, _ = _compose(report_date="2026-09-17")
+    stories = list(briefing.primary_stories[:3])
+    stories[0] = stories[0].model_copy(
+        update={"occurred_at": datetime(2026, 9, 17, 18, tzinfo=UTC)}
+    )
+    stories[1] = stories[1].model_copy(
+        update={"occurred_at": datetime(2026, 9, 16, 12, tzinfo=UTC), "supporting_source_count": 0}
+    )
+    stories[2] = stories[2].model_copy(
+        update={"occurred_at": datetime(2026, 9, 13, 12, tzinfo=UTC)}
+    )
+    intelligence = build_web_intelligence(
+        briefing.model_copy(update={"primary_stories": tuple(stories)}),
+        report_date="2026-09-17",
+    )
+
+    day0 = intelligence.freshness[stories[0].event_id]
+    day1 = intelligence.freshness[stories[1].event_id]
+    repeated = intelligence.freshness[stories[2].event_id]
+    follow_up_story = stories[1].model_copy(
+        update={"occurred_at": datetime(2026, 9, 17, 19, tzinfo=UTC)}
+    )
+    follow_up_intelligence = build_web_intelligence(
+        briefing.model_copy(update={"primary_stories": (follow_up_story,)}),
+        report_date="2026-09-17",
+    )
+    follow_up = follow_up_intelligence.freshness[follow_up_story.event_id]
+    assert day0.headline_eligible is True
+    assert day0.information_gain is True
+    assert day1.headline_eligible is False
+    assert day1.decision == "DEMOTE_SECONDARY"
+    assert "Day+1" in day1.decay_reason
+    assert repeated.section == "Secondary / Decayed"
+    assert follow_up.headline_eligible is True
+    assert follow_up.information_gain is True
+    assert follow_up.new_rank == 1
+
+
 def test_web_intelligence_detects_abnormal_move_and_unresolved_driver() -> None:
     briefing, _ = _compose(report_date="2026-09-17")
     markets = (_market("CL=F", "WTI Crude Futures", -4.06),)

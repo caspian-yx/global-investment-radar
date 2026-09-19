@@ -62,6 +62,11 @@ class FreshnessAssessment:
     age_hours: float
     headline_eligible: bool
     information_gain: bool
+    previous_rank: int = 0
+    new_rank: int | None = None
+    section: str = "Primary"
+    decision: str = "RETAIN_PRIMARY"
+    decay_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -166,6 +171,17 @@ class TrendSeries:
 
 
 @dataclass(frozen=True)
+class PriorityHighlight:
+    kind: str
+    title_zh: str
+    title_en: str
+    detail_zh: str
+    detail_en: str
+    state: SignalState
+    source_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ChinaCapabilities:
     source: str | None
     core_indices: bool
@@ -241,6 +257,7 @@ class WebReportModel:
     )
     ai_market_brief: tuple[str, ...] = ()
     localization_unavailable: bool = False
+    priority_highlights: tuple[PriorityHighlight, ...] = ()
 
 
 def build_web_report_model(
@@ -272,7 +289,7 @@ def _freshness(
 ) -> dict[str, FreshnessAssessment]:
     report_end = _report_end(report_date)
     result: dict[str, FreshnessAssessment] = {}
-    for story in briefing.primary_stories:
+    for previous_rank, story in enumerate(briefing.primary_stories, 1):
         age_hours = max(
             0.0, (report_end - story.occurred_at.astimezone(UTC)).total_seconds() / 3600
         )
@@ -282,12 +299,39 @@ def _freshness(
             band = FreshnessBand.AGING
         else:
             band = FreshnessBand.STALE
+        information_gain = age_hours <= 24 or (
+            band is FreshnessBand.AGING and story.supporting_source_count > 0
+        )
+        eligible = information_gain and band is not FreshnessBand.STALE
+        if eligible:
+            decision = "RETAIN_PRIMARY" if band is FreshnessBand.FRESH else "RETAIN_WITH_DECAY"
+            reason = (
+                "New observation within 24h."
+                if band is FreshnessBand.FRESH
+                else "Recent corroboration is present within the 48h aging window."
+            )
+        elif band is FreshnessBand.AGING:
+            decision = "DEMOTE_SECONDARY"
+            reason = "No new information gain in the Day+1 aging window."
+        else:
+            decision = "DEMOTE_SECONDARY"
+            reason = "Story age exceeds the headline window without a material follow-up."
         result[story.event_id] = FreshnessAssessment(
             band=band,
             age_hours=round(age_hours, 2),
-            headline_eligible=band is not FreshnessBand.STALE,
-            information_gain=band is FreshnessBand.FRESH or story.supporting_source_count > 0,
+            headline_eligible=eligible,
+            information_gain=information_gain,
+            previous_rank=previous_rank,
+            section="Primary" if eligible else "Secondary / Decayed",
+            decision=decision,
+            decay_reason=reason,
         )
+    new_rank = 0
+    for story in briefing.primary_stories:
+        assessment = result[story.event_id]
+        if assessment.headline_eligible:
+            new_rank += 1
+            result[story.event_id] = replace(assessment, new_rank=new_rank)
     return result
 
 
@@ -646,7 +690,7 @@ def _trend_series(markets: tuple[MarketObservation, ...]) -> tuple[TrendSeries, 
             continue
         for range_key, required, history in (
             ("1D", 2, item.history[:2]),
-            ("5D", 6, item.history[:6]),
+            ("1W", 8, item.history[:8]),
             ("1M", 20, item.history[:20]),
         ):
             if len(history) < required:
@@ -714,13 +758,57 @@ def _ai_market_brief(
     return tuple(paragraphs[:4])
 
 
+def _priority_highlights(
+    abnormal_moves: tuple[AbnormalMove, ...],
+    signals: tuple[CrossAssetSignal, ...],
+) -> tuple[PriorityHighlight, ...]:
+    """Build presentation-only attention items from already-detected signals."""
+    highlights: list[PriorityHighlight] = []
+    for move in abnormal_moves:
+        highlights.append(
+            PriorityHighlight(
+                kind="EXCEPTIONAL_MOVE",
+                title_zh=f"异常波动 · {move.name} {move.change_pct:+.2f}%",
+                title_en=f"Exceptional move · {move.name} {move.change_pct:+.2f}%",
+                detail_zh=(
+                    "已有证据支持的市场反应。"
+                    if move.state is SignalState.EVIDENCE_BACKED_INTERPRETATION
+                    else "主要驱动尚未确认；报告不生成未经证实的原因。"
+                ),
+                detail_en=(
+                    "Evidence-backed linked reaction is available."
+                    if move.state is SignalState.EVIDENCE_BACKED_INTERPRETATION
+                    else "Driver unresolved; no unverified cause is presented."
+                ),
+                state=move.state,
+                source_keys=(move.symbol,),
+            )
+        )
+    for signal in signals:
+        highlights.append(
+            PriorityHighlight(
+                kind=signal.code,
+                title_zh=signal.label_zh,
+                title_en=signal.label,
+                detail_zh=signal.detail_zh,
+                detail_en=(
+                    f"{signal.label}; deterministic observation from "
+                    f"{' / '.join(signal.symbols)}."
+                ),
+                state=signal.state,
+                source_keys=signal.symbols,
+            )
+        )
+    return tuple(highlights)
+
+
 def select_major_visuals(
     intelligence: WebReportModel, *, max_visuals: int = 2
 ) -> tuple[ChartEligibility, ...]:
     if max_visuals < 0:
         raise ValueError("max_visuals must be non-negative")
     trend_keys = tuple(
-        item.provider_symbol for item in intelligence.trend_series if item.range_key == "5D"
+        item.provider_symbol for item in intelligence.trend_series if item.range_key == "1W"
     )
     candidates: list[ChartEligibility] = []
     if trend_keys:
@@ -729,24 +817,33 @@ def select_major_visuals(
                 ChartKind.MARKET_TREND, True, "Validated market history is available.", trend_keys
             )
         )
+    dynamic: list[tuple[float, ChartEligibility]] = []
     if intelligence.abnormal_moves:
-        candidates.append(
-            ChartEligibility(
-                ChartKind.EXCEPTIONAL_MOVE,
-                True,
-                "An abnormal move clears the deterministic threshold.",
-                tuple(item.symbol for item in intelligence.abnormal_moves),
+        move = max(intelligence.abnormal_moves, key=lambda item: abs(item.change_pct))
+        dynamic.append(
+            (
+                100.0 + abs(move.change_pct),
+                ChartEligibility(
+                    ChartKind.EXCEPTIONAL_MOVE,
+                    True,
+                    "An abnormal move clears the deterministic threshold.",
+                    tuple(item.symbol for item in intelligence.abnormal_moves),
+                ),
             )
         )
-    if intelligence.china.available and len(candidates) < max_visuals:
-        candidates.append(
-            ChartEligibility(
-                ChartKind.CHINA_SECTORS,
-                True,
-                "Validated sector observations are ranked.",
-                tuple(item.sector for item in intelligence.china.sectors),
+    if intelligence.china.available and intelligence.china.sectors:
+        dynamic.append(
+            (
+                intelligence.china.dispersion,
+                ChartEligibility(
+                    ChartKind.CHINA_SECTORS,
+                    True,
+                    "Validated sector observations are ranked.",
+                    tuple(item.sector for item in intelligence.china.sectors),
+                ),
             )
         )
+    candidates.extend(item[1] for item in sorted(dynamic, key=lambda item: -item[0]))
     if max_visuals == 0:
         return ()
     return tuple(candidates[:max_visuals])
@@ -801,6 +898,7 @@ def build_web_intelligence(
         decayed_stories=decayed_stories,
         market_cards=_market_cards(market_items),
         trend_series=_trend_series(market_items),
+        priority_highlights=_priority_highlights(abnormal_moves, signals),
     )
     intelligence = replace(
         intelligence,
