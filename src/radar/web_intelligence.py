@@ -794,8 +794,7 @@ def _priority_highlights(
                 title_en=signal.label,
                 detail_zh=signal.detail_zh,
                 detail_en=(
-                    f"{signal.label}; deterministic observation from "
-                    f"{' / '.join(signal.symbols)}."
+                    f"{signal.label}; deterministic observation from {' / '.join(signal.symbols)}."
                 ),
                 state=signal.state,
                 source_keys=signal.symbols,

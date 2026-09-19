@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from test_briefing_composition import _compose
+from test_c8_storage import _record
 from test_web_intelligence import _market
 
 from radar.email_intelligence import build_email_intelligence
@@ -156,3 +157,33 @@ def test_market_brief_is_concrete_bounded_and_uses_only_projection_facts() -> No
     assert "3 个市场观察" in brief
     assert "确定性" not in brief
     assert "DRIVER_UNRESOLVED" not in brief
+
+
+def test_abnormal_move_uses_structured_reaction_without_claiming_causality() -> None:
+    base, _ = _compose()
+    briefing, _ = _compose(
+        market_impacts=(_record(event_id=base.primary_stories[0].event_id, symbol="CL=F"),)
+    )
+    reaction = briefing.primary_stories[0].market_reactions[0]
+    briefing = briefing.model_copy(
+        update={
+            "primary_stories": (
+                briefing.primary_stories[0].model_copy(
+                    update={
+                        "market_reactions": (reaction.model_copy(update={"target_symbol": "CL=F"}),)
+                    }
+                ),
+                *briefing.primary_stories[1:],
+            )
+        }
+    )
+
+    projection = build_email_intelligence(
+        briefing,
+        markets=(_market("CL=F", "WTI Crude Futures", -4.06),),
+    )
+
+    signal = projection.market_signals[0]
+    assert "结构化市场反应证据" in signal.interpretation_zh
+    assert "主要驱动" in signal.unknown_zh
+    assert "causality" in signal.unknown_en

@@ -143,14 +143,19 @@ def _focus_item(story: BriefingStoryCard) -> EmailFocusItem:
         unknown_en=(
             "A validated reaction is present, but its driver and causal boundary remain open."
             if reaction_en
-            else "Evidence is insufficient to confirm a direct market effect or full transmission path."
+            else (
+                "Evidence is insufficient to confirm a direct market effect or full "
+                "transmission path."
+            )
         ),
         sources=story.sources,
     )
 
 
 def _market_signals(
-    markets: tuple[MarketObservation, ...], occupied: set[str]
+    markets: tuple[MarketObservation, ...],
+    occupied: set[str],
+    evidence_symbols: set[str],
 ) -> tuple[EmailMarketSignal, ...]:
     abnormal = tuple(item for item in markets if abs(item.change_pct) >= 3.0)
     volatility = tuple(item for item in abnormal if item.symbol in {"^VIX", "^VXN"})
@@ -170,12 +175,11 @@ def _market_signals(
                 title_zh="美国科技股相对韧性",
                 title_en="US technology relative resilience",
                 symbols=("^NDX", "^DJI"),
-                observed=(
-                    f"Nasdaq 100 {ndx.change_pct:+.2f}%；"
-                    f"Dow Jones {dow.change_pct:+.2f}%"
-                ),
+                observed=(f"Nasdaq 100 {ndx.change_pct:+.2f}%；Dow Jones {dow.change_pct:+.2f}%"),
                 interpretation_zh="科技股相对传统蓝筹更强，这是由指数表现直接得出的分化观察。",
-                interpretation_en="Technology outperformed traditional blue chips in the observed index returns.",
+                interpretation_en=(
+                    "Technology outperformed traditional blue chips in the observed index returns."
+                ),
                 unknown_zh="分化原因仍需结合利率、行业与事件证据判断。",
                 unknown_en="The driver still requires rates, sector and event evidence.",
             )
@@ -188,11 +192,12 @@ def _market_signals(
                 title_zh="波动率共同变化",
                 title_en="Joint volatility move",
                 symbols=tuple(item.symbol for item in ordered),
-                observed="；".join(
-                    f"{item.name} {item.change_pct:+.2f}%" for item in ordered
-                ),
+                observed="；".join(f"{item.name} {item.change_pct:+.2f}%" for item in ordered),
                 interpretation_zh="波动率指标正在共同重定价风险，但方向本身不证明具体驱动。",
-                interpretation_en="The volatility gauges are repricing risk together, but direction alone does not prove a driver.",
+                interpretation_en=(
+                    "The volatility gauges are repricing risk together, but direction "
+                    "alone does not prove a driver."
+                ),
                 unknown_zh="尚无足够证据确认单一驱动。",
                 unknown_en="Evidence is insufficient to confirm a single driver.",
             )
@@ -210,10 +215,29 @@ def _market_signals(
                 title_en=f"Abnormal move in {item.name}",
                 symbols=(item.symbol,),
                 observed=f"{item.name} {item.change_pct:+.2f}%",
-                interpretation_zh="该变动已达到异常波动阈值，应优先寻找可靠证据。",
-                interpretation_en="The move cleared the abnormality threshold and warrants evidence retrieval.",
-                unknown_zh="尚无足够证据确认主要驱动。",
-                unknown_en="Evidence is insufficient to confirm the main driver.",
+                interpretation_zh=(
+                    "该变动已达到异常波动阈值，且已有结构化市场反应证据支持关联观察。"
+                    if item.symbol in evidence_symbols
+                    else "该变动已达到异常波动阈值，应优先寻找可靠证据。"
+                ),
+                interpretation_en=(
+                    "The move cleared the abnormality threshold and has a structured "
+                    "market-reaction record supporting an associated observation."
+                    if item.symbol in evidence_symbols
+                    else "The move cleared the abnormality threshold and warrants evidence "
+                    "retrieval."
+                ),
+                unknown_zh=(
+                    "反应已有记录，但主要驱动与直接因果关系仍未被证实。"
+                    if item.symbol in evidence_symbols
+                    else "尚无足够证据确认主要驱动。"
+                ),
+                unknown_en=(
+                    "The reaction is recorded, but the main driver and direct causality "
+                    "remain unconfirmed."
+                    if item.symbol in evidence_symbols
+                    else "Evidence is insufficient to confirm the main driver."
+                ),
             )
         )
     return tuple(result)
@@ -226,9 +250,7 @@ def _future_catalysts(
     for item in briefing.watch_today:
         if item.event_id not in current_ids or not _SPECIFIC_CATALYST.search(item.text):
             continue
-        result.append(
-            EmailCatalyst(event_id=item.event_id, title=item.headline, trigger=item.text)
-        )
+        result.append(EmailCatalyst(event_id=item.event_id, title=item.headline, trigger=item.text))
     return tuple(result[:5])
 
 
@@ -278,9 +300,7 @@ def build_email_intelligence(
         for story in briefing.primary_stories
         if _is_current(story, report_end) and story.sources
     )
-    stale_ids = tuple(
-        story.event_id for story in briefing.primary_stories if story not in current
-    )
+    stale_ids = tuple(story.event_id for story in briefing.primary_stories if story not in current)
     seen: set[str] = set()
     focus: list[EmailFocusItem] = []
     suppressed = 0
@@ -294,16 +314,18 @@ def build_email_intelligence(
         if len(focus) == 5:
             break
     market_items = tuple(markets)
-    market_signals = _market_signals(market_items, seen)
+    evidence_symbols = {
+        reaction.target_symbol
+        for story in briefing.primary_stories
+        for reaction in story.market_reactions
+        if reaction.association_confidence.value in {"HIGH", "MEDIUM"}
+    }
+    market_signals = _market_signals(market_items, seen, evidence_symbols)
     current_ids = {story.event_id for story in current}
     catalysts = _future_catalysts(briefing, current_ids)
     focus_items = tuple(focus)
-    brief_zh, brief_en = _market_brief(
-        market_items, focus_items, market_signals, catalysts
-    )
-    unresolved = tuple(
-        symbol for signal in market_signals for symbol in signal.symbols
-    )
+    brief_zh, brief_en = _market_brief(market_items, focus_items, market_signals, catalysts)
+    unresolved = tuple(symbol for signal in market_signals for symbol in signal.symbols)
     return EmailIntelligence(
         focus=focus_items,
         market_signals=market_signals,

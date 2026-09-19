@@ -234,14 +234,18 @@ def build_one_driver(
         as_of=AS_OF,
     )
     assert len(drivers) == len(claims) == 1
-    return drivers[0], claims[0], {
-        "observation": observation,
-        "target_evidence": target_evidence,
-        "target": target,
-        "source": source,
-        "source_evidence": source_evidence,
-        "candidate": candidate,
-    }
+    return (
+        drivers[0],
+        claims[0],
+        {
+            "observation": observation,
+            "target_evidence": target_evidence,
+            "target": target,
+            "source": source,
+            "source_evidence": source_evidence,
+            "candidate": candidate,
+        },
+    )
 
 
 def test_observation_evidence_is_reusable_and_c1_equivalent() -> None:
@@ -400,9 +404,7 @@ def test_temporal_ignores_collection_time_and_handles_dst_by_iana_zone() -> None
         DriverTemporalRelation.SAME_WINDOW_AMBIGUOUS
     )
 
-    dst_target = target.model_copy(
-        update={"occurred_at": datetime(2026, 11, 2, 21, tzinfo=UTC)}
-    )
+    dst_target = target.model_copy(update={"occurred_at": datetime(2026, 11, 2, 21, tzinfo=UTC)})
     dst_candidate = candidate.model_copy(
         update={"occurred_at": datetime(2026, 11, 2, 20, 30, tzinfo=UTC)}
     )
@@ -483,9 +485,7 @@ def test_single_generic_topic_is_weak_and_cannot_create_a_driver() -> None:
         content="A general energy update was published.",
     )
 
-    assert classify_relevance(target, candidate, [source], weak_asset) is (
-        DriverRelevance.WEAK
-    )
+    assert classify_relevance(target, candidate, [source], weak_asset) is (DriverRelevance.WEAK)
     drivers, claims = build_driver_candidates(
         target_events=[target],
         candidate_events=[candidate],
@@ -528,9 +528,7 @@ def test_exact_entity_outranks_strong_topic_and_symbol_collisions_do_not_match()
 
 def test_driver_identity_depends_only_on_semantic_relationship() -> None:
     candidate_evidence = ["evidence-b", "evidence-a"]
-    first = driver_candidate_id(
-        "target", "candidate", candidate_evidence, DRIVER_RULE_VERSION
-    )
+    first = driver_candidate_id("target", "candidate", candidate_evidence, DRIVER_RULE_VERSION)
     reordered = driver_candidate_id(
         "target", "candidate", list(reversed(candidate_evidence)), DRIVER_RULE_VERSION
     )
@@ -539,9 +537,7 @@ def test_driver_identity_depends_only_on_semantic_relationship() -> None:
     assert first != driver_candidate_id(
         "other-target", "candidate", candidate_evidence, DRIVER_RULE_VERSION
     )
-    assert first != driver_candidate_id(
-        "target", "candidate", ["evidence-a"], DRIVER_RULE_VERSION
-    )
+    assert first != driver_candidate_id("target", "candidate", ["evidence-a"], DRIVER_RULE_VERSION)
     assert first != driver_candidate_id("target", "candidate", candidate_evidence, "v2")
 
 
@@ -642,9 +638,7 @@ def test_interpretation_does_not_embed_untrusted_causal_or_trading_title() -> No
 
 
 def test_ambiguous_driver_is_low_and_irrelevant_or_post_event_sources_are_rejected() -> None:
-    ambiguous, _, _ = build_one_driver(
-        candidate_published_at=datetime(2026, 9, 7, 18, tzinfo=UTC)
-    )
+    ambiguous, _, _ = build_one_driver(candidate_published_at=datetime(2026, 9, 7, 18, tzinfo=UTC))
     assert ambiguous.temporal_relation is DriverTemporalRelation.SAME_WINDOW_AMBIGUOUS
     assert ambiguous.confidence is DriverConfidence.LOW
 
@@ -935,12 +929,8 @@ def test_only_eligible_opposite_rate_stances_are_conflicts() -> None:
     assert drivers[0].confidence is DriverConfidence.MEDIUM
     assert drivers[0].confidence_components["conflict"] == "NO"
 
-    fresh_cut = stale_cut.model_copy(
-        update={"published_at": TARGET_AT - timedelta(hours=20)}
-    )
-    fresh_cut_event = candidates[1].model_copy(
-        update={"occurred_at": fresh_cut.published_at}
-    )
+    fresh_cut = stale_cut.model_copy(update={"published_at": TARGET_AT - timedelta(hours=20)})
+    fresh_cut_event = candidates[1].model_copy(update={"occurred_at": fresh_cut.published_at})
     drivers, _ = build_driver_candidates(
         target_events=[target],
         candidate_events=[candidates[0], fresh_cut_event],
@@ -1053,9 +1043,7 @@ def test_unknown_session_metadata_produces_unknown_not_fake_ordering() -> None:
     _, _, target = target_bundle()
     _, _, candidate = candidate_bundle()
 
-    assert classify_temporal_relation(target, candidate, {}) is (
-        DriverTemporalRelation.UNKNOWN
-    )
+    assert classify_temporal_relation(target, candidate, {}) is (DriverTemporalRelation.UNKNOWN)
 
 
 @pytest.mark.parametrize("session_kind", ["NEAR_24_HOUR", "CONTINUOUS"])
@@ -1063,9 +1051,7 @@ def test_non_exchange_daily_bar_same_utc_date_is_always_ambiguous(
     session_kind: str,
 ) -> None:
     _, _, target = target_bundle()
-    _, _, candidate = candidate_bundle(
-        published_at=TARGET_AT + timedelta(hours=1)
-    )
+    _, _, candidate = candidate_bundle(published_at=TARGET_AT + timedelta(hours=1))
     asset = {**US_ASSET, "session_kind": session_kind, "timezone": "UTC"}
     asset.pop("close_time", None)
 
@@ -1148,9 +1134,7 @@ def test_driver_bundle_validation_rejects_cross_reference_errors() -> None:
             assets=[US_ASSET],
         )
 
-    post = driver.model_copy(
-        update={"temporal_relation": DriverTemporalRelation.POST_EVENT}
-    )
+    post = driver.model_copy(update={"temporal_relation": DriverTemporalRelation.POST_EVENT})
     with pytest.raises(ValueError, match="eligible temporal"):
         validate_driver_candidate_bundle(
             post,
@@ -1162,9 +1146,7 @@ def test_driver_bundle_validation_rejects_cross_reference_errors() -> None:
             assets=[US_ASSET],
         )
 
-    incomplete_claim = claim.model_copy(
-        update={"evidence_ids": driver.target_evidence_ids}
-    )
+    incomplete_claim = claim.model_copy(update={"evidence_ids": driver.target_evidence_ids})
     with pytest.raises(ValueError, match="Claim evidence"):
         validate_driver_candidate_bundle(
             driver,
@@ -1264,9 +1246,7 @@ def test_cross_asset_context_requires_complete_comparable_patterns() -> None:
     assert "dxy" not in text
 
     incomplete = [item for item in observations if item.symbol not in {"^RUT", "JPY=X"}]
-    incomplete_claims, _, _ = build_cross_asset_context(
-        incomplete, [target], [US_ASSET], AS_OF
-    )
+    incomplete_claims, _, _ = build_cross_asset_context(incomplete, [target], [US_ASSET], AS_OF)
     assert all("fx proxy" not in item.text.casefold() for item in incomplete_claims)
 
 
@@ -1290,9 +1270,7 @@ def test_cross_asset_context_rejects_stale_or_mismatched_sessions() -> None:
         market_observation("EURUSD=X", name="EUR/USD", change_pct=-1.0),
         market_observation("JPY=X", name="USD/JPY", change_pct=-1.0),
     ]
-    claims, _, _ = build_cross_asset_context(
-        contradictory_fx, [target], [US_ASSET], AS_OF
-    )
+    claims, _, _ = build_cross_asset_context(contradictory_fx, [target], [US_ASSET], AS_OF)
     assert all("FX proxy" not in item.text for item in claims)
 
 
@@ -1337,9 +1315,7 @@ def test_cross_asset_breadth_requires_distinct_symbols() -> None:
     ]
     _, _, target = target_bundle()
 
-    claims, _, _ = build_cross_asset_context(
-        duplicates, [target], [US_ASSET], AS_OF
-    )
+    claims, _, _ = build_cross_asset_context(duplicates, [target], [US_ASSET], AS_OF)
 
     assert all("breadth" not in item.text.casefold() for item in claims)
 
@@ -1430,12 +1406,8 @@ def test_macro_backdrop_is_limited_to_supported_bls_cpi_and_unemployment() -> No
         previous_value=4.2,
         unit="%",
     )
-    cpi_yoy = macro_observation(
-        "CPI-YOY", name="CPI YoY", value=2.6, previous_value=2.7, unit="%"
-    )
-    treasury = macro_observation(
-        "US10Y", name="U.S. 10Y Treasury Yield", value=4.08, unit="%"
-    )
+    cpi_yoy = macro_observation("CPI-YOY", name="CPI YoY", value=2.6, previous_value=2.7, unit="%")
+    treasury = macro_observation("US10Y", name="U.S. 10Y Treasury Yield", value=4.08, unit="%")
 
     claims, evidence, _ = build_macro_backdrop(
         [cpi, unemployment, cpi_yoy, treasury], [target], AS_OF

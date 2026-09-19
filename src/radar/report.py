@@ -100,6 +100,11 @@ def report_context(
         if localized is not None
         else {}
     )
+    localized_under_radar = (
+        {item.key.removeprefix("under-radar:"): item for item in localized.under_radar}
+        if localized is not None
+        else {}
+    )
     localized_primary = localized is not None and (
         composition is None or composition.delivery_mode is not DeliveryMode.ENGLISH
     )
@@ -135,6 +140,7 @@ def report_context(
         "localized_market_names": localized_market_names,
         "localized_primary_stories": localized_primary_stories,
         "localized_watch_items": localized_watch_items,
+        "localized_under_radar": localized_under_radar,
         "localization_labels": C91_LABELS,
         "localized_primary": localized_primary,
         "include_english_reference": include_english_reference,

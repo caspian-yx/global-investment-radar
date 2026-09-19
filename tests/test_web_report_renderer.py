@@ -116,7 +116,7 @@ def test_web_interaction_contract_has_real_ranges_tooltips_and_fail_closed_hooks
     assert 'data-range="1D"' in html
     assert 'data-range="1W"' in html
     assert 'data-range="1M"' in html
-    assert 'data-points=' in html
+    assert "data-points=" in html
     assert 'data-sparkline="' in html
     assert "pointermove" in html
     assert "pointerleave" in html

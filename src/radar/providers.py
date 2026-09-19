@@ -72,19 +72,13 @@ def _url_contains_sensitive_material(url: str) -> bool:
     if parts.username is not None or parts.password is not None:
         return True
     for key, _ in parse_qsl(parts.query, keep_blank_values=True):
-        normalized_key = "".join(
-            character for character in key.casefold() if character.isalnum()
-        )
-        if any(
-            fragment in normalized_key for fragment in SENSITIVE_URL_QUERY_FRAGMENTS
-        ):
+        normalized_key = "".join(character for character in key.casefold() if character.isalnum())
+        if any(fragment in normalized_key for fragment in SENSITIVE_URL_QUERY_FRAGMENTS):
             return True
     normalized_fragment = "".join(
         character for character in parts.fragment.casefold() if character.isalnum()
     )
-    return any(
-        fragment in normalized_fragment for fragment in SENSITIVE_URL_QUERY_FRAGMENTS
-    )
+    return any(fragment in normalized_fragment for fragment in SENSITIVE_URL_QUERY_FRAGMENTS)
 
 
 class ResponseTooLargeError(ValueError):
@@ -481,9 +475,7 @@ class FredYieldProvider:
             collected_at=now,
         )
 
-    def _fetch(
-        self, client: httpx.Client, asset: dict[str, str]
-    ) -> MarketObservation:
+    def _fetch(self, client: httpx.Client, asset: dict[str, str]) -> MarketObservation:
         symbol = asset["symbol"]
         response = client.get(self.endpoint, params={"id": symbol})
         response.raise_for_status()
@@ -609,11 +601,7 @@ class OfficialRSSProvider:
         *,
         name: str = "official-rss",
     ) -> None:
-        self.feeds = [
-            config
-            for feed in feeds
-            if (config := self._feed_config(feed)).enabled
-        ]
+        self.feeds = [config for feed in feeds if (config := self._feed_config(feed)).enabled]
         self.lookback = timedelta(hours=lookback_hours)
         self.timeout = timeout
         self.name = name
@@ -622,9 +610,7 @@ class OfficialRSSProvider:
         documents: list[SourceDocument] = []
         warnings: list[str] = []
         diagnostics = {key: 0 for key in RSS_DIAGNOSTIC_KEYS}
-        diagnostics.update(
-            {"feeds_succeeded": 0, "feeds_failed": 0, "oversize_responses": 0}
-        )
+        diagnostics.update({"feeds_succeeded": 0, "feeds_failed": 0, "oversize_responses": 0})
         headers = {"User-Agent": "GlobalInvestmentRadar/0.1 (public-research-pipeline)"}
         with httpx.Client(timeout=self.timeout, follow_redirects=True, headers=headers) as client:
             for feed in self.feeds:
@@ -644,14 +630,12 @@ class OfficialRSSProvider:
                     diagnostics["feeds_failed"] += 1
                     diagnostics["oversize_responses"] += 1
                     warnings.append(
-                        f"{feed.publisher}: feed collection failed "
-                        "(ResponseTooLargeError)."
+                        f"{feed.publisher}: feed collection failed (ResponseTooLargeError)."
                     )
                 except (httpx.HTTPError, ET.ParseError, ValueError) as exc:
                     diagnostics["feeds_failed"] += 1
                     warnings.append(
-                        f"{feed.publisher}: feed collection failed "
-                        f"({type(exc).__name__})."
+                        f"{feed.publisher}: feed collection failed ({type(exc).__name__})."
                     )
         if self.feeds and diagnostics["feeds_failed"] == len(self.feeds):
             status = ProviderStatus.FAILED
@@ -687,17 +671,13 @@ class OfficialRSSProvider:
         result = RSSParseResult()
         documents_by_url: dict[str, SourceDocument] = {}
         entries = [
-            element
-            for element in root.iter()
-            if self._local_name(element.tag) in {"item", "entry"}
+            element for element in root.iter() if self._local_name(element.tag) in {"item", "entry"}
         ]
         result.diagnostics["total_entries"] = len(entries)
         for item in entries:
             title = (self._child_text(item, "title") or "Untitled").strip()
             url = self._link(item)
-            description = (
-                self._child_text(item, "description", "summary", "content") or ""
-            )
+            description = self._child_text(item, "description", "summary", "content") or ""
             try:
                 published, timezone_was_inferred = self._published_at(
                     item,
@@ -723,9 +703,7 @@ class OfficialRSSProvider:
             if was_truncated:
                 result.diagnostics["content_truncated"] += 1
             native_id = (
-                self._child_text(item, "guid", "id")
-                if config.native_ids_immutable
-                else None
+                self._child_text(item, "guid", "id") if config.native_ids_immutable else None
             )
             metadata: dict[str, JsonValue] = {"feed_url": config.url}
             if timezone_was_inferred:
@@ -915,9 +893,7 @@ class OfficialRSSProvider:
         raise ValueError("response is not an RSS or Atom feed")
 
 
-def build_providers(
-    settings: Settings, universe: dict[str, Any]
-) -> list[IntelligenceProvider]:
+def build_providers(settings: Settings, universe: dict[str, Any]) -> list[IntelligenceProvider]:
     if settings.data_mode == "demo":
         return [DemoProvider()]
     providers: list[IntelligenceProvider] = [
