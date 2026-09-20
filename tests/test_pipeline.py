@@ -142,7 +142,10 @@ def test_no_ai_demo_pipeline_generates_html(tmp_path, monkeypatch) -> None:
         "events": 8,
     }
     assert result.email_intelligence["focus_selected"] <= 5
-    assert result.email_intelligence["rule_version"] == "c8-email-v1"
+    assert result.email_intelligence["rule_version"] == "c9-email-v1"
+    assert result.c9_discovery["discovery"]["clusters"] == 4
+    assert result.c9_discovery["market_discovery"]["markets_evaluated"] == 11
+    assert result.c9_discovery["coverage_audit"]["measurable"] is True
     html = report.read_text(encoding="utf-8")
     assert "DEMO DATA" in html
     assert "AI is off" in html

@@ -8,13 +8,17 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from radar.briefing import compose_daily_brief, select_daily_stories
+from radar.calendar import ScheduledCatalyst, build_calendar_providers, select_future_catalysts
+from radar.china_market import CapabilityState, build_china_market_provider
 from radar.config import Settings, load_universe
+from radar.coverage import audit_coverage, benchmark_from_documents
 from radar.delivery import AudienceService
 from radar.deterministic import (
     assess_report_quality,
     extract_market_events,
     extract_story_events,
 )
+from radar.discovery import build_discovery_clusters
 from radar.domain import (
     AIEnrichmentResult,
     EvidencePack,
@@ -56,6 +60,7 @@ from radar.localization import (
     validate_localization_snapshot,
 )
 from radar.macro import build_macro_source_document
+from radar.market_discovery import discover_market_anomalies
 from radar.providers import build_providers
 from radar.relevance import (
     EventTargetDecision,
@@ -63,6 +68,7 @@ from radar.relevance import (
     summarize_relationships,
 )
 from radar.report import EmailHtmlReportRenderer, HtmlReportRenderer, report_context
+from radar.source_registry import RegistryProvider, attach_runtime_coverage, build_source_registry
 from radar.storage import RadarStore
 from radar.story import STORY_RULE_VERSION, consolidate_stories
 
@@ -199,8 +205,9 @@ def _run_started_pipeline(
     timer_started: float,
     audience: bool,
 ) -> PipelineResult:
+    providers = build_providers(settings, universe)
     batches = collect_intelligence_providers(
-        build_providers(settings, universe),
+        providers,
         business_now,
     )
     provider_statuses: list[ProviderRunStatus] = []
@@ -225,6 +232,64 @@ def _run_started_pipeline(
             len(batch.macro),
             batch.diagnostics,
         )
+
+    quality_provider_statuses = list(provider_statuses)
+    calendar_providers = (
+        build_calendar_providers(settings, universe) if settings.app_env != "test" else []
+    )
+    calendar_events: list[ScheduledCatalyst] = []
+    for provider in calendar_providers:
+        calendar_batch = provider.collect(started_at)
+        calendar_events.extend(calendar_batch.events)
+        provider_statuses.append(
+            ProviderRunStatus(
+                provider=calendar_batch.provider_id,
+                status=calendar_batch.status,
+                item_count=len(calendar_batch.events),
+                warnings=list(calendar_batch.warnings),
+                diagnostics=calendar_batch.diagnostics,
+                error_type=calendar_batch.error_type,
+            )
+        )
+    future_catalysts = select_future_catalysts(tuple(calendar_events), as_of=started_at)
+
+    china_provider = build_china_market_provider(settings) if settings.app_env != "test" else None
+    china_intelligence = china_provider.collect(started_at) if china_provider is not None else None
+    if china_intelligence is not None:
+        china_states = tuple(china_intelligence.capabilities.model_dump().values())
+        china_status = (
+            ProviderStatus.NO_DATA
+            if all(
+                state in {CapabilityState.UNAVAILABLE, CapabilityState.STALE}
+                for state in china_states
+            )
+            else ProviderStatus.DEGRADED
+            if any(state is not CapabilityState.AVAILABLE for state in china_states)
+            else ProviderStatus.OK
+        )
+        provider_statuses.append(
+            ProviderRunStatus(
+                provider=china_intelligence.provider,
+                status=china_status,
+                item_count=(
+                    len(china_intelligence.indices)
+                    + len(china_intelligence.sectors)
+                    + int(china_intelligence.breadth is not None)
+                    + int(china_intelligence.activity is not None)
+                ),
+                warnings=list(china_intelligence.warnings),
+                diagnostics={
+                    f"capability_{key.casefold()}": int(value is CapabilityState.AVAILABLE)
+                    for key, value in china_intelligence.capabilities.model_dump().items()
+                },
+            )
+        )
+
+    registry_providers: list[RegistryProvider] = [*providers, *calendar_providers]
+    if china_provider is not None:
+        registry_providers.append(china_provider)
+    source_registry = build_source_registry(settings, universe, registry_providers)
+    source_coverage = attach_runtime_coverage(source_registry, provider_statuses)
 
     document_dedupe = deduplicate_source_documents(_flatten(batch.documents for batch in batches))
     documents = document_dedupe.documents
@@ -257,6 +322,21 @@ def _run_started_pipeline(
     current_documents_by_id = {document.id: document for document in documents}
     story_documents_by_id.update(current_documents_by_id)
     documents = [story_documents_by_id[item_id] for item_id in sorted(story_documents_by_id)]
+    discovery = build_discovery_clusters(
+        story_consolidation.stories,
+        documents,
+        now=started_at,
+    )
+    market_discovery = discover_market_anomalies(
+        markets,
+        universe["assets"],
+        as_of=started_at,
+    )
+    logger.info(
+        "C9 discovery clusters=%s market=%s",
+        discovery.diagnostics.model_dump(mode="json"),
+        market_discovery.diagnostics.model_dump(mode="json"),
+    )
     official_events, official_claims, official_evidence = extract_story_events(
         story_consolidation.stories,
         story_documents_by_id.values(),
@@ -523,7 +603,7 @@ def _run_started_pipeline(
         macro_count=len(macro),
         document_count=len(documents),
         official_event_count=len(official_events),
-        provider_statuses=provider_statuses,
+        provider_statuses=quality_provider_statuses,
     )
     logger.info(
         "Report quality status=%s market_coverage=%.1f%% reasons=%s",
@@ -650,9 +730,28 @@ def _run_started_pipeline(
         localization_diagnostics.model_dump(mode="json"),
     )
 
+    benchmark = benchmark_from_documents(documents)
+    evidence_resolved_ids = {
+        item.cluster_id for item in discovery.clusters if item.evidence_resolved
+    }
+    focus_ids = {item.story_id for item in briefing.primary_stories if item.story_id is not None}
+    coverage_audit = audit_coverage(
+        benchmark,
+        discovery.clusters,
+        evidence_resolved_ids=evidence_resolved_ids,
+        focus_ids=focus_ids,
+    )
+    logger.info("C9 coverage audit=%s", coverage_audit.model_dump(mode="json"))
+
     is_demo = any(batch.is_demo for batch in batches)
     ai_test_data = any(item.is_test_data for item in analyses)
-    email_intelligence = build_email_intelligence(briefing, markets)
+    email_intelligence = build_email_intelligence(
+        briefing,
+        markets,
+        market_discovery=market_discovery,
+        catalysts=future_catalysts,
+        china=china_intelligence,
+    )
     logger.info(
         "C8 Email intelligence diagnostics=%s",
         email_intelligence.diagnostics.model_dump(mode="json"),
@@ -769,6 +868,18 @@ def _run_started_pipeline(
             "events": len(events),
         },
         email_intelligence=email_intelligence.diagnostics.model_dump(mode="json"),
+        c9_discovery={
+            "source_registry": [item.model_dump(mode="json") for item in source_registry],
+            "source_coverage": [item.model_dump(mode="json") for item in source_coverage],
+            "discovery": discovery.diagnostics.model_dump(mode="json"),
+            "market_discovery": market_discovery.diagnostics.model_dump(mode="json"),
+            "calendar_events": len(calendar_events),
+            "future_catalysts": len(future_catalysts),
+            "china": china_intelligence.capabilities.model_dump(mode="json")
+            if china_intelligence is not None
+            else {"status": "not_configured"},
+            "coverage_audit": coverage_audit.model_dump(mode="json"),
+        },
     )
     details = {
         "documents": len(documents),
@@ -794,6 +905,7 @@ def _run_started_pipeline(
         "c91": localization_diagnostics.model_dump(mode="json"),
         "c92": audience_details,
         "c8_email": email_intelligence.diagnostics.model_dump(mode="json"),
+        "c9_discovery": result.c9_discovery,
     }
     logger.info(
         "Pipeline completed run_id=%s report_path=%s email_status=%s elapsed_seconds=%.3f",

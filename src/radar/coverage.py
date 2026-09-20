@@ -8,6 +8,8 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from radar.discovery import DiscoveryCluster
+from radar.domain import SourceCategory, SourceDocument
+from radar.explanation import extract_topics
 
 
 class _CoverageModel(BaseModel):
@@ -214,3 +216,37 @@ def audit_coverage(
         focus_recall=round(focused / count, 4) if measurable else None,
         misses=tuple(misses),
     )
+
+
+def benchmark_from_documents(
+    documents: Sequence[SourceDocument],
+) -> tuple[BenchmarkStory, ...]:
+    """Build an auditable benchmark only from configured professional discovery feeds."""
+
+    result: list[BenchmarkStory] = []
+    for item in documents:
+        if item.source_category is not SourceCategory.PROFESSIONAL_NEWS:
+            continue
+        metadata_entities = item.provider_metadata.get("entity_ids", [])
+        entity_ids = (
+            tuple(str(value) for value in metadata_entities)
+            if isinstance(metadata_entities, list)
+            else ()
+        )
+        topics = tuple(
+            sorted(topic.value for topic in extract_topics(f"{item.title} {item.content}"))
+        )
+        result.append(
+            BenchmarkStory(
+                benchmark_id=item.id,
+                title=item.title,
+                provider_id=item.provider,
+                source_url=item.canonical_url,
+                published_at=item.published_at,
+                entity_ids=entity_ids,
+                topics=topics,
+                region=item.region,
+                quality_sufficient=bool(item.publisher and item.canonical_url),
+            )
+        )
+    return tuple(sorted(result, key=lambda item: (item.published_at, item.benchmark_id)))
