@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from radar.briefing import BriefingSource, BriefingStoryCard, DailyIntelligenceBrief
+from radar.calendar import ScheduledCatalyst
+from radar.china_market import CapabilityState, ChinaMarketIntelligence
 from radar.domain import MarketObservation
+from radar.market_discovery import MarketDiscoveryResult
 
-C8_EMAIL_RULE_VERSION = "c8-email-v1"
+C9_EMAIL_RULE_VERSION = "c9-email-v1"
 _SPECIFIC_CATALYST = re.compile(
     r"\b(scheduled|at\s+\d{1,2}:\d{2}|on\s+\d{4}-\d{2}-\d{2}|"
     r"decision|meeting|release|auction|earnings|vote|deadline|published\s+rate)\b",
@@ -53,6 +56,33 @@ class EmailCatalyst(BaseModel):
     event_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     trigger: str = Field(min_length=1)
+    source_url: str | None = None
+
+
+class EmailChinaIndex(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    code: str
+    name_zh: str
+    name_en: str
+    close: float
+    change_pct: float
+
+
+class EmailChinaSummary(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    provider: str
+    indices: tuple[EmailChinaIndex, ...]
+    breadth_zh: str | None = None
+    breadth_en: str | None = None
+    turnover_zh: str | None = None
+    turnover_en: str | None = None
+    leadership_zh: tuple[str, ...] = ()
+    leadership_en: tuple[str, ...] = ()
+    sectors_available: bool
+    limitations_zh: tuple[str, ...] = ()
+    limitations_en: tuple[str, ...] = ()
 
 
 class EmailIntelligenceDiagnostics(BaseModel):
@@ -63,7 +93,7 @@ class EmailIntelligenceDiagnostics(BaseModel):
     clusters_suppressed: int = Field(ge=0)
     stale_or_demoted_event_ids: tuple[str, ...]
     unresolved_market_symbols: tuple[str, ...]
-    rule_version: str = C8_EMAIL_RULE_VERSION
+    rule_version: str = C9_EMAIL_RULE_VERSION
 
 
 class EmailIntelligence(BaseModel):
@@ -72,6 +102,7 @@ class EmailIntelligence(BaseModel):
     focus: tuple[EmailFocusItem, ...] = Field(max_length=5)
     market_signals: tuple[EmailMarketSignal, ...]
     next_catalysts: tuple[EmailCatalyst, ...] = Field(max_length=5)
+    china: EmailChinaSummary | None = None
     market_brief_zh: tuple[str, ...] = Field(min_length=1, max_length=4)
     market_brief_en: tuple[str, ...] = Field(min_length=1, max_length=4)
     diagnostics: EmailIntelligenceDiagnostics
@@ -254,6 +285,165 @@ def _future_catalysts(
     return tuple(result[:5])
 
 
+def _scheduled_catalysts(events: Sequence[ScheduledCatalyst]) -> tuple[EmailCatalyst, ...]:
+    return tuple(
+        EmailCatalyst(
+            event_id=item.id,
+            title=item.title,
+            trigger=f"{item.scheduled_at:%Y-%m-%d %H:%M UTC} · {item.provider_name}",
+            source_url=item.source_url,
+        )
+        for item in events[:5]
+    )
+
+
+_CHINA_INDEX_NAMES = {
+    "000001": "上证综指",
+    "399001": "深证成指",
+    "000300": "沪深300",
+    "000510": "中证A500",
+    "399006": "创业板指",
+    "000688": "科创50",
+    "000905": "中证500",
+    "000852": "中证1000",
+}
+_LEADERSHIP_LABELS = {
+    "GROWTH_LEADERSHIP": ("成长风格相对占优", "Growth style leadership"),
+    "SMALL_CAP_LEADERSHIP": ("小盘风格相对占优", "Small-cap leadership"),
+}
+
+
+def _china_summary(china: ChinaMarketIntelligence | None) -> EmailChinaSummary | None:
+    if china is None:
+        return None
+    breadth_zh = breadth_en = None
+    if china.breadth is not None:
+        breadth_zh = (
+            f"上涨 {china.breadth.advancers} / 下跌 {china.breadth.decliners} / "
+            f"平盘 {china.breadth.unchanged}"
+        )
+        breadth_en = (
+            f"Advancers {china.breadth.advancers} / decliners {china.breadth.decliners} / "
+            f"unchanged {china.breadth.unchanged}"
+        )
+    turnover_zh = turnover_en = None
+    if china.activity is not None:
+        trillions = china.activity.total_turnover / 1_000_000_000_000
+        turnover_zh = f"全市场成交额约 {trillions:.2f} 万亿元"
+        turnover_en = f"Aggregate turnover approximately CNY {trillions:.2f}tn"
+    leadership_pairs = tuple(
+        _LEADERSHIP_LABELS[item]
+        for item in (china.leadership.signals if china.leadership is not None else ())
+        if item in _LEADERSHIP_LABELS
+    )
+    limitations_zh: list[str] = []
+    limitations_en: list[str] = []
+    if china.capabilities.sectors is not CapabilityState.AVAILABLE:
+        limitations_zh.append("申万行业分类数据不可用，未用代理行业填充。")
+        limitations_en.append("Shenwan sector data is unavailable; no proxy sectors were used.")
+    if china.capabilities.breadth is not CapabilityState.AVAILABLE:
+        limitations_zh.append("市场涨跌结构不可用。")
+        limitations_en.append("Market breadth is unavailable.")
+    return EmailChinaSummary(
+        provider=china.provider,
+        indices=tuple(
+            EmailChinaIndex(
+                code=item.code,
+                name_zh=_CHINA_INDEX_NAMES.get(item.code, item.name),
+                name_en=item.name,
+                close=item.close,
+                change_pct=item.change_pct,
+            )
+            for item in china.indices
+        ),
+        breadth_zh=breadth_zh,
+        breadth_en=breadth_en,
+        turnover_zh=turnover_zh,
+        turnover_en=turnover_en,
+        leadership_zh=tuple(item[0] for item in leadership_pairs),
+        leadership_en=tuple(item[1] for item in leadership_pairs),
+        sectors_available=china.capabilities.sectors is CapabilityState.AVAILABLE,
+        limitations_zh=tuple(limitations_zh),
+        limitations_en=tuple(limitations_en),
+    )
+
+
+def _discovered_market_signals(
+    discovery: MarketDiscoveryResult,
+    markets: tuple[MarketObservation, ...],
+    evidence_symbols: set[str],
+) -> tuple[EmailMarketSignal, ...]:
+    lookup = {item.symbol: item for item in markets}
+    result: list[EmailMarketSignal] = []
+    for divergence in discovery.divergences:
+        if divergence.code == "US_TECH_RELATIVE_STRENGTH":
+            result.append(
+                EmailMarketSignal(
+                    cluster_key=f"market:{divergence.code.casefold()}",
+                    title_zh="美国科技股相对韧性",
+                    title_en="US technology relative resilience",
+                    symbols=divergence.symbols,
+                    observed=divergence.detail,
+                    interpretation_zh="这是由指数回报直接识别的市场分化，不是对原因的推断。",
+                    interpretation_en=(
+                        "This is a deterministic divergence in observed index returns, "
+                        "not an inferred cause."
+                    ),
+                    unknown_zh="分化原因仍需利率、行业与事件证据确认。",
+                    unknown_en="The driver still requires rates, sector and event evidence.",
+                )
+            )
+        elif divergence.code == "RATES_EQUITY_PRESSURE":
+            result.append(
+                EmailMarketSignal(
+                    cluster_key="market:rates-equity-pressure",
+                    title_zh="利率与科技股压力同步",
+                    title_en="Rates and technology equity pressure",
+                    symbols=divergence.symbols,
+                    observed=divergence.detail,
+                    interpretation_zh="利率与科技股出现同步压力，但共同变化不等于因果。",
+                    interpretation_en=(
+                        "Rates and technology shares moved together; co-movement is not causality."
+                    ),
+                    unknown_zh="直接传导路径仍需事件证据确认。",
+                    unknown_en="The direct transmission path remains unconfirmed.",
+                )
+            )
+    for anomaly in discovery.anomalies:
+        names = tuple(
+            lookup[symbol].name if symbol in lookup else symbol for symbol in anomaly.symbols
+        )
+        has_evidence = any(symbol in evidence_symbols for symbol in anomaly.symbols)
+        label = " / ".join(names)
+        context = f"；5日 {anomaly.change_5d:+.2f}%" if anomaly.change_5d is not None else ""
+        result.append(
+            EmailMarketSignal(
+                cluster_key=anomaly.cluster_key,
+                title_zh=f"{label} 异常波动",
+                title_en=f"Abnormal move in {label}",
+                symbols=anomaly.symbols,
+                observed=f"1日 {anomaly.change_1d:+.2f}%{context}",
+                interpretation_zh=(
+                    "异常波动已触发证据检索；现有结构化反应记录仅支持关联观察。"
+                    if has_evidence
+                    else "异常波动已由透明阈值识别，并触发证据检索。"
+                ),
+                interpretation_en=(
+                    "The anomaly opened evidence retrieval; an existing reaction record "
+                    "supports association only."
+                    if has_evidence
+                    else (
+                        "Transparent thresholds identified the anomaly and opened "
+                        "evidence retrieval."
+                    )
+                ),
+                unknown_zh="尚无足够证据确认主要驱动。",
+                unknown_en="Evidence is insufficient to confirm the main driver.",
+            )
+        )
+    return tuple(result)
+
+
 def _market_brief(
     markets: tuple[MarketObservation, ...],
     focus: tuple[EmailFocusItem, ...],
@@ -293,6 +483,10 @@ def _market_brief(
 def build_email_intelligence(
     briefing: DailyIntelligenceBrief,
     markets: Iterable[MarketObservation] = (),
+    *,
+    market_discovery: MarketDiscoveryResult | None = None,
+    catalysts: Sequence[ScheduledCatalyst] = (),
+    china: ChinaMarketIntelligence | None = None,
 ) -> EmailIntelligence:
     report_end = _report_end(briefing.report_date)
     current = tuple(
@@ -320,16 +514,23 @@ def build_email_intelligence(
         for reaction in story.market_reactions
         if reaction.association_confidence.value in {"HIGH", "MEDIUM"}
     }
-    market_signals = _market_signals(market_items, seen, evidence_symbols)
+    market_signals = (
+        _discovered_market_signals(market_discovery, market_items, evidence_symbols)
+        if market_discovery is not None
+        else _market_signals(market_items, seen, evidence_symbols)
+    )
     current_ids = {story.event_id for story in current}
-    catalysts = _future_catalysts(briefing, current_ids)
+    catalyst_items = (
+        _scheduled_catalysts(catalysts) if catalysts else _future_catalysts(briefing, current_ids)
+    )
     focus_items = tuple(focus)
-    brief_zh, brief_en = _market_brief(market_items, focus_items, market_signals, catalysts)
+    brief_zh, brief_en = _market_brief(market_items, focus_items, market_signals, catalyst_items)
     unresolved = tuple(symbol for signal in market_signals for symbol in signal.symbols)
     return EmailIntelligence(
         focus=focus_items,
         market_signals=market_signals,
-        next_catalysts=catalysts,
+        next_catalysts=catalyst_items,
+        china=_china_summary(china),
         market_brief_zh=brief_zh,
         market_brief_en=brief_en,
         diagnostics=EmailIntelligenceDiagnostics(

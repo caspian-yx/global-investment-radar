@@ -6,7 +6,17 @@ from test_briefing_composition import _compose
 from test_c8_storage import _record
 from test_web_intelligence import _market
 
+from radar.calendar import ScheduledCatalyst
+from radar.china_market import (
+    CapabilityState,
+    ChinaBreadth,
+    ChinaCapabilitySummary,
+    ChinaIndexSnapshot,
+    ChinaLeadership,
+    ChinaMarketIntelligence,
+)
 from radar.email_intelligence import build_email_intelligence
+from radar.market_discovery import discover_market_anomalies
 
 
 def test_quiet_or_stale_day_does_not_fill_focus_or_future_catalysts() -> None:
@@ -187,3 +197,102 @@ def test_abnormal_move_uses_structured_reaction_without_claiming_causality() -> 
     assert "结构化市场反应证据" in signal.interpretation_zh
     assert "主要驱动" in signal.unknown_zh
     assert "causality" in signal.unknown_en
+
+
+def test_validated_calendar_replaces_news_derived_future_watch() -> None:
+    briefing, _ = _compose()
+    scheduled = ScheduledCatalyst(
+        id="calendar-us-cpi",
+        provider_id="bls-calendar",
+        provider_name="U.S. Bureau of Labor Statistics",
+        external_id="cpi-2026-09",
+        title="Consumer Price Index",
+        scheduled_at=datetime(2026, 9, 18, 12, 30, tzinfo=UTC),
+        source_timezone="America/New_York",
+        region="US",
+        category="macro_release",
+        importance="high",
+        source_url="https://www.bls.gov/schedule/",
+    )
+
+    projection = build_email_intelligence(briefing, catalysts=(scheduled,))
+
+    assert len(projection.next_catalysts) == 1
+    assert projection.next_catalysts[0].event_id == "calendar-us-cpi"
+    assert projection.next_catalysts[0].source_url == "https://www.bls.gov/schedule/"
+    assert "2026-09-18 12:30 UTC" in projection.next_catalysts[0].trigger
+
+
+def test_market_discovery_projection_uses_deterministic_signal_without_enum_leakage() -> None:
+    briefing, _ = _compose()
+    markets = (
+        _market("^NDX", "Nasdaq 100", 0.02),
+        _market("^DJI", "Dow Jones", -1.21),
+        _market("CL=F", "WTI Crude Futures", -4.06),
+    )
+    discovery = discover_market_anomalies(markets, (), as_of=datetime(2026, 9, 17, tzinfo=UTC))
+
+    projection = build_email_intelligence(
+        briefing.model_copy(update={"primary_stories": (), "watch_today": ()}),
+        markets,
+        market_discovery=discovery,
+    )
+
+    rendered = " ".join(
+        signal.title_zh + signal.interpretation_zh + signal.unknown_zh
+        for signal in projection.market_signals
+    )
+    assert "美国科技股相对韧性" in rendered
+    assert "WTI Crude Futures 异常波动" in rendered
+    assert "US_TECH_RELATIVE_STRENGTH" not in rendered
+    assert "absolute_1d" not in rendered
+    assert "尚无足够证据确认主要驱动" in rendered
+
+
+def test_china_capability_summary_is_specific_and_localized() -> None:
+    briefing, _ = _compose()
+    observed_at = datetime(2026, 9, 17, 7, tzinfo=UTC)
+    china = ChinaMarketIntelligence(
+        provider="eastmoney",
+        indices=(
+            ChinaIndexSnapshot(
+                code="000001",
+                name="SSE Composite",
+                close=3300.0,
+                change_pct=0.4,
+                turnover=400_000_000_000.0,
+                observed_at=observed_at,
+                provider="eastmoney",
+            ),
+        ),
+        breadth=ChinaBreadth(
+            advancers=2800,
+            decliners=1900,
+            unchanged=200,
+            total=4900,
+            observed_at=observed_at,
+            provider="eastmoney",
+        ),
+        leadership=ChinaLeadership(
+            signals=("GROWTH_LEADERSHIP",),
+            observed_at=observed_at,
+            provider="eastmoney",
+        ),
+        capabilities=ChinaCapabilitySummary(
+            indices=CapabilityState.AVAILABLE,
+            sectors=CapabilityState.UNAVAILABLE,
+            breadth=CapabilityState.AVAILABLE,
+            turnover=CapabilityState.PARTIAL,
+            style=CapabilityState.AVAILABLE,
+        ),
+        warnings=("Recognized sector taxonomy is unavailable.",),
+    )
+
+    projection = build_email_intelligence(briefing, china=china)
+
+    assert projection.china is not None
+    assert projection.china.indices[0].name_zh == "上证综指"
+    assert projection.china.breadth_zh == "上涨 2800 / 下跌 1900 / 平盘 200"
+    assert projection.china.leadership_zh == ("成长风格相对占优",)
+    assert projection.china.sectors_available is False
+    assert "GROWTH_LEADERSHIP" not in projection.model_dump_json()
