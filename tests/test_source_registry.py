@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from radar.calendar import build_calendar_providers
+from radar.china_market import build_china_market_provider
 from radar.config import Settings, load_universe
 from radar.domain import ProviderRunStatus, ProviderStatus
 from radar.providers import build_providers
@@ -19,6 +20,9 @@ def test_registry_describes_every_runtime_provider_in_stable_order() -> None:
         *build_providers(settings, universe),
         *build_calendar_providers(settings, universe),
     ]
+    china_provider = build_china_market_provider(settings)
+    assert china_provider is not None
+    providers.append(china_provider)
 
     registry = build_source_registry(settings, universe, providers)
 
@@ -39,6 +43,11 @@ def test_registry_describes_every_runtime_provider_in_stable_order() -> None:
     assert by_id["nvidia-press-releases-rss"].role is ProviderRole.PRIMARY_EVIDENCE
     assert by_id["bls-release-calendar"].role is ProviderRole.CALENDAR
     assert ProviderCapability.CALENDAR in by_id["bls-release-calendar"].capabilities
+    assert by_id["experimental-eastmoney-china-market"].role is ProviderRole.CHINA_MARKET_STRUCTURE
+    assert (
+        ProviderCapability.CHINA_MARKET_STRUCTURE
+        in by_id["experimental-eastmoney-china-market"].capabilities
+    )
     for provider_id in (
         "cnbc-top-news-rss",
         "marketwatch-top-stories-rss",

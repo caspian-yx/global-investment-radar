@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict
 
 from radar.calendar import ICSCalendarProvider
+from radar.china_market import EastmoneyChinaMarketProvider
 from radar.config import Settings
 from radar.domain import ProviderRunStatus, ProviderStatus, SourceRole
 
@@ -92,6 +93,25 @@ def _registry_entry(provider: RegistryProvider) -> SourceRegistryEntry:
             capabilities=(ProviderCapability.CALENDAR,),
             authority_level="official",
             access_notes="Official public calendar feed with bounded lookahead and payload.",
+        )
+    if isinstance(provider, EastmoneyChinaMarketProvider):
+        return SourceRegistryEntry(
+            provider_id=provider_id,
+            provider_name="Eastmoney China market structure",
+            provider_type=provider_type,
+            role=ProviderRole.CHINA_MARKET_STRUCTURE,
+            regions=("CN",),
+            asset_classes=("EQUITY_INDEX", "EQUITY"),
+            domains=("indices", "breadth", "turnover", "style"),
+            capabilities=(
+                ProviderCapability.MARKET_DATA,
+                ProviderCapability.CHINA_MARKET_STRUCTURE,
+            ),
+            authority_level="experimental-secondary",
+            access_notes=(
+                "Public zero-key JSON endpoint with no project-controlled SLA; "
+                "every capability fails closed."
+            ),
         )
     if provider_type == "YahooChartProvider":
         assets = getattr(provider, "assets", ())
