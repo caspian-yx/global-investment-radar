@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from radar.calendar import build_calendar_providers
 from radar.config import Settings, load_universe
 from radar.domain import ProviderRunStatus, ProviderStatus
 from radar.providers import build_providers
@@ -14,7 +15,10 @@ from radar.source_registry import (
 def test_registry_describes_every_runtime_provider_in_stable_order() -> None:
     settings = Settings(data_mode="live", sec_contact_email="ops@example.com")
     universe = load_universe(settings)
-    providers = build_providers(settings, universe)
+    providers = [
+        *build_providers(settings, universe),
+        *build_calendar_providers(settings, universe),
+    ]
 
     registry = build_source_registry(settings, universe, providers)
 
@@ -33,6 +37,8 @@ def test_registry_describes_every_runtime_provider_in_stable_order() -> None:
     assert by_id["sec-edgar-submissions"].requires_contact_identity is True
     assert by_id["federal-reserve-all-releases-rss"].role is ProviderRole.PRIMARY_EVIDENCE
     assert by_id["nvidia-press-releases-rss"].role is ProviderRole.PRIMARY_EVIDENCE
+    assert by_id["bls-release-calendar"].role is ProviderRole.CALENDAR
+    assert ProviderCapability.CALENDAR in by_id["bls-release-calendar"].capabilities
     for provider_id in (
         "cnbc-top-news-rss",
         "marketwatch-top-stories-rss",
@@ -46,7 +52,11 @@ def test_registry_describes_every_runtime_provider_in_stable_order() -> None:
 def test_runtime_coverage_is_joined_by_provider_identity() -> None:
     settings = Settings(data_mode="live", sec_contact_email="ops@example.com")
     universe = load_universe(settings)
-    registry = build_source_registry(settings, universe, build_providers(settings, universe))
+    providers = [
+        *build_providers(settings, universe),
+        *build_calendar_providers(settings, universe),
+    ]
+    registry = build_source_registry(settings, universe, providers)
     statuses = [
         ProviderRunStatus(
             provider="experimental-yahoo-chart",

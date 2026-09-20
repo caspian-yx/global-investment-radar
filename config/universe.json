@@ -266,6 +266,18 @@
       "enabled": true
     }
   ],
+  "calendar_feeds": [
+    {
+      "provider_id": "bls-release-calendar",
+      "provider_name": "U.S. Bureau of Labor Statistics release calendar",
+      "url": "https://www.bls.gov/schedule/news_release/bls.ics",
+      "region": "US",
+      "category": "macro_release",
+      "lookahead_days": 45,
+      "max_items": 30,
+      "max_response_bytes": 2000000
+    }
+  ],
   "sec_filings": {
     "filers": [
       {"cik": "0000320193", "name": "Apple Inc."},

@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from radar.calendar import ICSCalendarProvider
 from radar.config import Settings
 from radar.domain import ProviderRunStatus, ProviderStatus, SourceRole
 
@@ -79,6 +80,19 @@ def _sorted_values(values: Iterable[Any], key: str) -> tuple[str, ...]:
 def _registry_entry(provider: RegistryProvider) -> SourceRegistryEntry:
     provider_id = str(provider.name)
     provider_type = type(provider).__name__
+    if isinstance(provider, ICSCalendarProvider):
+        config = provider.config
+        return SourceRegistryEntry(
+            provider_id=provider_id,
+            provider_name=str(config.provider_name),
+            provider_type=provider_type,
+            role=ProviderRole.CALENDAR,
+            regions=(str(config.region),),
+            domains=(str(config.category),),
+            capabilities=(ProviderCapability.CALENDAR,),
+            authority_level="official",
+            access_notes="Official public calendar feed with bounded lookahead and payload.",
+        )
     if provider_type == "YahooChartProvider":
         assets = getattr(provider, "assets", ())
         return SourceRegistryEntry(
