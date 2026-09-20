@@ -258,9 +258,7 @@ def test_public_news_feed_remains_secondary_discovery_not_primary_evidence() -> 
     assert document.source_category is SourceCategory.PROFESSIONAL_NEWS
     assert document.source_role is SourceRole.SECONDARY
     assert document.source_tier is SourceTier.B
-    assert document.provider_metadata == {
-        "feed_url": "https://news.example.test/rss/markets.xml"
-    }
+    assert document.provider_metadata == {"feed_url": "https://news.example.test/rss/markets.xml"}
 
 
 def test_sec_rss_fixture_parses_timezone_offset() -> None:
