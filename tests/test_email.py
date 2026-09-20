@@ -7,7 +7,36 @@ from typing import Any
 import pytest
 
 from radar.config import Settings
-from radar.email import FileEmailSender, SMTPEmailSender
+from radar.email import FileEmailSender, SMTPEmailSender, normalize_recipients
+
+
+@pytest.mark.parametrize(
+    ("sources", "expected"),
+    [
+        (("a@example.com",), ("a@example.com",)),
+        (
+            ("a@example.com,b@example.com,c@example.com",),
+            ("a@example.com", "b@example.com", "c@example.com"),
+        ),
+        (("a@example.com,a@example.com",), ("a@example.com",)),
+        (
+            (" a@example.com , B@example.com,b@example.com ",),
+            ("a@example.com", "B@example.com"),
+        ),
+        (
+            ("radar@example.com,owner@example.com", "RADAR@example.com", None),
+            ("radar@example.com", "owner@example.com"),
+        ),
+        (
+            ("a@example.com,, ", ["A@example.com", "b@example.com"]),
+            ("a@example.com", "b@example.com"),
+        ),
+    ],
+)
+def test_normalize_recipients_returns_first_seen_unique_addresses(
+    sources: tuple[object, ...], expected: tuple[str, ...]
+) -> None:
+    assert normalize_recipients(*sources) == expected
 
 
 def test_file_email_sender_writes_an_html_message(tmp_path) -> None:
@@ -39,8 +68,11 @@ def test_smtp_sender_uses_tls_login_and_html(monkeypatch) -> None:
         def login(self, username: str, password: str) -> None:
             calls["login"] = (username, password)
 
-        def send_message(self, message: EmailMessage) -> None:
+        def send_message(
+            self, message: EmailMessage, *, to_addrs: tuple[str, ...] | None = None
+        ) -> None:
             calls["message"] = message
+            calls["to_addrs"] = to_addrs
 
     monkeypatch.setattr("radar.email.smtplib.SMTP", FakeSMTP)
     settings = Settings(
@@ -58,6 +90,7 @@ def test_smtp_sender_uses_tls_login_and_html(monkeypatch) -> None:
     assert calls["connection"] == ("smtp.example.com", 587, 20)
     assert calls["tls"] is True
     assert calls["login"] == ("smtp-user", "test-only-password")
+    assert calls["to_addrs"] == ("owner@example.com",)
     message = calls["message"]
     assert isinstance(message, EmailMessage)
     assert message["To"] == "owner@example.com"
@@ -88,7 +121,10 @@ def test_smtp_sender_send_to_creates_one_independent_recipient_message(monkeypat
         def login(self, username: str, password: str) -> None:
             _ = username, password
 
-        def send_message(self, message: EmailMessage) -> None:
+        def send_message(
+            self, message: EmailMessage, *, to_addrs: tuple[str, ...] | None = None
+        ) -> None:
+            assert to_addrs == ("alice@example.com",)
             calls.append(message)
 
     monkeypatch.setattr("radar.email.smtplib.SMTP", FakeSMTP)
@@ -107,3 +143,47 @@ def test_smtp_sender_send_to_creates_one_independent_recipient_message(monkeypat
     assert calls[0]["To"] == "alice@example.com"
     assert calls[0].get_all("Cc") is None
     assert calls[0].get_all("Bcc") is None
+
+
+def test_smtp_sender_submits_one_deduplicated_envelope_for_multiple_recipients(
+    monkeypatch,
+) -> None:
+    submissions: list[tuple[EmailMessage, tuple[str, ...] | None]] = []
+
+    class FakeSMTP:
+        def __init__(self, host: str, port: int, timeout: int) -> None:
+            _ = host, port, timeout
+
+        def __enter__(self) -> FakeSMTP:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def starttls(self, *, context: ssl.SSLContext) -> None:
+            _ = context
+
+        def login(self, username: str, password: str) -> None:
+            _ = username, password
+
+        def send_message(
+            self, message: EmailMessage, *, to_addrs: tuple[str, ...] | None = None
+        ) -> None:
+            submissions.append((message, to_addrs))
+
+    monkeypatch.setattr("radar.email.smtplib.SMTP", FakeSMTP)
+    settings = Settings(
+        email_mode="smtp",
+        email_from="a@example.com",
+        email_to=" a@example.com , B@example.com,b@example.com,c@example.com ",
+        smtp_host="smtp.example.com",
+        smtp_username="smtp-user",
+        smtp_password="test-only-password",
+    )
+
+    SMTPEmailSender(settings).send(subject="Daily", html="<b>One logical delivery</b>")
+
+    assert len(submissions) == 1
+    message, envelope = submissions[0]
+    assert envelope == ("a@example.com", "B@example.com", "c@example.com")
+    assert message["To"] == "a@example.com, B@example.com, c@example.com"

@@ -53,6 +53,38 @@ def test_localized_report_is_chinese_first_and_keeps_english_reference() -> None
     assert "全球投资晨报" in body.split("<table", 1)[0]
 
 
+def test_localized_email_hides_internal_market_regime_enums() -> None:
+    from test_web_intelligence import _market as market_with_history
+
+    briefing, _ = _compose()
+    localized = parse_localization_response(
+        json.dumps(_translated_payload(briefing), ensure_ascii=False),
+        build_localization_payload(briefing),
+        briefing,
+    )
+
+    html = EmailHtmlReportRenderer().render(
+        report_context(
+            briefing=briefing,
+            data_mode="live",
+            is_demo=False,
+            ai_test_data=False,
+            localized=localized,
+            markets=(
+                market_with_history(
+                    "^VIX",
+                    "VIX",
+                    -4.08,
+                    history=(110, 108, 106, 104, 102, 100, 98),
+                ),
+            ),
+        )
+    )
+
+    assert "DOWNTREND" not in html
+    assert "下行趋势" in html
+
+
 def test_english_report_shape_remains_the_default_without_localization() -> None:
     briefing, _ = _compose()
     html = EmailHtmlReportRenderer().render(

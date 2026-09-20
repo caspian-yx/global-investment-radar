@@ -2,11 +2,32 @@ from __future__ import annotations
 
 import smtplib
 import ssl
+from collections.abc import Iterable
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Protocol
 
+from radar.audience import normalize_email, validate_email
 from radar.config import PROJECT_ROOT, Settings
+
+
+def normalize_recipients(
+    *sources: str | Iterable[str] | None,
+) -> tuple[str, ...]:
+    """Return valid recipients once, preserving deterministic first-seen order."""
+
+    unique: dict[str, str] = {}
+    for source in sources:
+        if source is None:
+            continue
+        values = (source,) if isinstance(source, str) else source
+        for value in values:
+            for raw_recipient in value.split(","):
+                if not raw_recipient.strip():
+                    continue
+                recipient = validate_email(raw_recipient)
+                unique.setdefault(normalize_email(recipient), recipient)
+    return tuple(unique.values())
 
 
 class EmailSender(Protocol):
@@ -64,22 +85,26 @@ class SMTPEmailSender:
     def send(self, *, subject: str, html: str) -> str:
         if not self.settings.email_to:
             raise ValueError("Missing SMTP configuration: EMAIL_TO")
+        recipients = normalize_recipients(self.settings.email_to)
+        if not recipients:
+            raise ValueError("Missing SMTP configuration: EMAIL_TO")
         return self._send_message(
-            recipient=self.settings.email_to,
+            recipients=recipients,
             subject=subject,
             html=html,
         )
 
     def send_to(self, *, recipient: str, subject: str, html: str) -> str:
-        if not recipient.strip():
+        recipients = normalize_recipients(recipient)
+        if len(recipients) != 1:
             raise ValueError("recipient must not be blank")
-        return self._send_message(recipient=recipient, subject=subject, html=html)
+        return self._send_message(recipients=recipients, subject=subject, html=html)
 
-    def _send_message(self, *, recipient: str, subject: str, html: str) -> str:
+    def _send_message(self, *, recipients: tuple[str, ...], subject: str, html: str) -> str:
         message = EmailMessage()
         message["Subject"] = subject
         message["From"] = self.settings.email_from
-        message["To"] = recipient
+        message["To"] = ", ".join(recipients)
         message.set_content("Open this message in an HTML-capable email client.")
         message.add_alternative(html, subtype="html")
         with smtplib.SMTP(
@@ -87,7 +112,7 @@ class SMTPEmailSender:
         ) as smtp:
             smtp.starttls(context=ssl.create_default_context())
             smtp.login(str(self.settings.smtp_username), str(self.settings.smtp_password))
-            smtp.send_message(message)
+            smtp.send_message(message, to_addrs=recipients)
         return "Email accepted by SMTP server."
 
 
