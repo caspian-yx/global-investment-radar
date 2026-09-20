@@ -127,7 +127,9 @@ def build_discovery_clusters(
         if not members:
             continue
         presentation = document_by_id.get(story.presentation_document_id, members[0])
-        primary_ids = tuple(sorted(item.id for item in members if item.source_role is SourceRole.PRIMARY))
+        primary_ids = tuple(
+            sorted(item.id for item in members if item.source_role is SourceRole.PRIMARY)
+        )
         professional_publishers = {
             item.publisher.casefold()
             for item in members
@@ -154,9 +156,7 @@ def build_discovery_clusters(
                 region=story.region,
                 source_document_ids=tuple(item.id for item in members),
                 source_publishers=tuple(sorted({item.publisher for item in members})),
-                source_categories=tuple(
-                    sorted({item.source_category.value for item in members})
-                ),
+                source_categories=tuple(sorted({item.source_category.value for item in members})),
                 primary_source_ids=primary_ids,
                 latest_published_at=story.latest_published_at,
                 evidence_resolved=evidence_resolved,
@@ -182,6 +182,8 @@ def build_discovery_clusters(
             clusters=len(ordered),
             evidence_resolved=sum(item.evidence_resolved for item in ordered),
             focus_candidates=sum(item.focus_eligible for item in ordered),
-            evidence_rejected=sum("evidence_unresolved" in item.rejection_reasons for item in ordered),
+            evidence_rejected=sum(
+                "evidence_unresolved" in item.rejection_reasons for item in ordered
+            ),
         ),
     )
