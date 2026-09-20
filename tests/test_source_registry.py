@@ -33,6 +33,14 @@ def test_registry_describes_every_runtime_provider_in_stable_order() -> None:
     assert by_id["sec-edgar-submissions"].requires_contact_identity is True
     assert by_id["federal-reserve-all-releases-rss"].role is ProviderRole.PRIMARY_EVIDENCE
     assert by_id["nvidia-press-releases-rss"].role is ProviderRole.PRIMARY_EVIDENCE
+    for provider_id in (
+        "cnbc-top-news-rss",
+        "marketwatch-top-stories-rss",
+        "wsj-markets-rss",
+        "yahoo-finance-news-rss",
+    ):
+        assert by_id[provider_id].role is ProviderRole.NEWS_DISCOVERY
+        assert ProviderCapability.NEWS_DISCOVERY in by_id[provider_id].capabilities
 
 
 def test_runtime_coverage_is_joined_by_provider_identity() -> None:

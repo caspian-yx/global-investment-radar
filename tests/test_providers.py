@@ -228,6 +228,41 @@ def test_fed_rss_fixture_parses_with_rfc2822_date() -> None:
     }
 
 
+def test_public_news_feed_remains_secondary_discovery_not_primary_evidence() -> None:
+    raw = """<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>Stocks fall as yields rise</title>
+      <link>https://news.example.test/markets/stocks-fall</link>
+      <pubDate>Sat, 19 Sep 2026 18:00:00 GMT</pubDate>
+      <description>Major indexes retreated while Treasury yields moved higher.</description>
+      </item></channel></rss>"""
+    feed = {
+        "provider_name": "public-market-news-rss",
+        "url": "https://news.example.test/rss/markets.xml",
+        "publisher": "Public Market News",
+        "source_tier": "B",
+        "source_category": "professional_news",
+        "source_role": "secondary",
+        "region": "US",
+        "language": "en",
+    }
+
+    result = OfficialRSSProvider([], lookback_hours=48)._parse(
+        raw,
+        feed,
+        datetime(2026, 9, 20, tzinfo=UTC),
+        timedelta(hours=48),
+    )
+
+    assert len(result.documents) == 1
+    document = result.documents[0]
+    assert document.source_category is SourceCategory.PROFESSIONAL_NEWS
+    assert document.source_role is SourceRole.SECONDARY
+    assert document.source_tier is SourceTier.B
+    assert document.provider_metadata == {
+        "feed_url": "https://news.example.test/rss/markets.xml"
+    }
+
+
 def test_sec_rss_fixture_parses_timezone_offset() -> None:
     provider = OfficialRSSProvider([], lookback_hours=168)
     result = provider._parse(
