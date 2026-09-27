@@ -2314,13 +2314,15 @@ class RadarStore:
                     if immutable_conflict_columns
                     else None
                 )
-                result = connection.execute(
-                    statement.on_conflict_do_update(
-                        index_elements=[table.c.id], set_=upsert_columns, where=conflict_guard
-                    )
+                upsert = statement.on_conflict_do_update(
+                    index_elements=[table.c.id], set_=upsert_columns, where=conflict_guard
                 )
-                if immutable_conflict_columns and result.rowcount != len(chunk):
-                    raise ValueError("Story immutable identity cannot be rewritten")
+                if immutable_conflict_columns:
+                    returned_ids = connection.execute(upsert.returning(table.c.id)).scalars().all()
+                    if len(returned_ids) != len(chunk):
+                        raise ValueError("Story immutable identity cannot be rewritten")
+                else:
+                    connection.execute(upsert)
             return
         existing_ids: set[str] = set()
         for offset in range(0, len(row_ids), 500):
