@@ -828,6 +828,66 @@ def test_story_batch_conflict_cannot_rewrite_created_run_id(tmp_path) -> None:
     assert persisted.last_run_id == "run-1"
 
 
+def test_story_batch_retry_keeps_created_run_id(tmp_path) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'story-valid-retry.db').as_posix()}")
+    store.initialize()
+    source, story_item, _ = _story_bundle()
+    store.save_documents("run-1", [source])
+    store.save_stories("run-1", [story_item])
+
+    store.save_stories("run-2", [story_item])
+
+    with store.engine.connect() as connection:
+        persisted = connection.execute(
+            select(stories_table.c.created_run_id, stories_table.c.last_run_id).where(
+                stories_table.c.id == story_item.id
+            )
+        ).one()
+    assert persisted.created_run_id == "run-1"
+    assert persisted.last_run_id == "run-2"
+
+
+def test_story_retry_does_not_depend_on_upsert_rowcount(tmp_path, monkeypatch) -> None:
+    store = RadarStore(f"sqlite:///{(tmp_path / 'story-unknown-rowcount.db').as_posix()}")
+    store.initialize()
+    source, story_item, _ = _story_bundle()
+    store.save_documents("run-1", [source])
+    store.save_stories("run-1", [story_item])
+
+    class UnknownRowcountResult:
+        rowcount = -1
+
+        def __init__(self, result) -> None:
+            self._result = result
+
+        def scalars(self):
+            return self._result.scalars()
+
+    with store.engine.begin() as connection:
+        existing = (
+            connection.execute(select(stories_table).where(stories_table.c.id == story_item.id))
+            .mappings()
+            .one()
+        )
+        original_execute = connection.execute
+
+        def execute(statement, *args, **kwargs):
+            result = original_execute(statement, *args, **kwargs)
+            return UnknownRowcountResult(result) if "ON CONFLICT" in str(statement) else result
+
+        monkeypatch.setattr(connection, "execute", execute)
+        store._upsert_many_connection(
+            connection,
+            stories_table,
+            [(story_item.id, dict(existing))],
+            immutable_conflict_columns=(
+                "created_run_id",
+                "identity_seed_document_id",
+                "rule_version",
+            ),
+        )
+
+
 def test_source_document_cannot_belong_to_two_story_v1_stories(tmp_path) -> None:
     store = RadarStore(f"sqlite:///{(tmp_path / 'unique-membership.db').as_posix()}")
     store.initialize()
