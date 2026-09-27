@@ -30,6 +30,7 @@ from radar.domain import (
     stable_id,
 )
 from radar.email import RecipientEmailSender, build_email_sender
+from radar.email_audit import archive_email_body
 from radar.email_intelligence import build_email_intelligence
 from radar.enrichment import run_structured_explanation_enrichment
 from radar.explanation import (
@@ -881,6 +882,15 @@ def _run_started_pipeline(
         try:
             legacy_sender = build_email_sender(settings)
             email_html = EmailHtmlReportRenderer().render(context)
+            audit = archive_email_body(
+                email_html,
+                run_id=run_id,
+                output_dir=settings.resolved_report_output_dir.parent / "email-audit",
+            )
+            logger.info(
+                "Email body audited sha256=%s renderer=daily_email.html.j2",
+                audit.sha256,
+            )
             email_status = legacy_sender.send(subject=subject, html=email_html)
         except Exception as exc:
             elapsed_seconds = round(time.perf_counter() - timer_started, 3)

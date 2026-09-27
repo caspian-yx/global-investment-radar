@@ -12,6 +12,7 @@ from radar.config import PROJECT_ROOT
 from radar.domain import MarketObservation, content_hash, stable_id
 from radar.email_intelligence import EmailIntelligence, build_email_intelligence
 from radar.localization import C91_LABELS, LocalizedBriefingContent
+from radar.presentation import coverage_gap_copy, presentation_copy, presentation_label
 from radar.web_intelligence import build_web_intelligence
 
 
@@ -35,6 +36,15 @@ class EmailHtmlReportRenderer:
             trim_blocks=True,
             lstrip_blocks=True,
         )
+        self.environment.filters["presentation_zh"] = lambda value: presentation_label(
+            value, zh=True
+        )
+        self.environment.filters["presentation_en"] = lambda value: presentation_label(
+            value, zh=False
+        )
+        self.environment.filters["copy_zh"] = lambda value: presentation_copy(value, zh=True)
+        self.environment.filters["copy_en"] = lambda value: presentation_copy(value, zh=False)
+        self.environment.globals["coverage_gap_copy"] = coverage_gap_copy
 
     def render(self, context: dict[str, Any]) -> str:
         template = self.environment.get_template("daily_email.html.j2")
@@ -58,6 +68,15 @@ class WebHtmlReportRenderer:
             trim_blocks=True,
             lstrip_blocks=True,
         )
+        self.environment.filters["presentation_zh"] = lambda value: presentation_label(
+            value, zh=True
+        )
+        self.environment.filters["presentation_en"] = lambda value: presentation_label(
+            value, zh=False
+        )
+        self.environment.filters["copy_zh"] = lambda value: presentation_copy(value, zh=True)
+        self.environment.filters["copy_en"] = lambda value: presentation_copy(value, zh=False)
+        self.environment.globals["coverage_gap_copy"] = coverage_gap_copy
 
     def render(self, context: dict[str, Any]) -> str:
         template = self.environment.get_template("daily_web.html.j2")

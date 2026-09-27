@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import ssl
 from email.message import EmailMessage
 from typing import Any
@@ -147,7 +148,9 @@ def test_smtp_sender_send_to_creates_one_independent_recipient_message(monkeypat
 
 def test_smtp_sender_submits_one_deduplicated_envelope_for_multiple_recipients(
     monkeypatch,
+    caplog,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="radar.email")
     submissions: list[tuple[EmailMessage, tuple[str, ...] | None]] = []
 
     class FakeSMTP:
@@ -187,3 +190,5 @@ def test_smtp_sender_submits_one_deduplicated_envelope_for_multiple_recipients(
     message, envelope = submissions[0]
     assert envelope == ("a@example.com", "B@example.com", "c@example.com")
     assert message["To"] == "a@example.com, B@example.com, c@example.com"
+    assert "raw=4 normalized=3 deduplicated=1" in caplog.text
+    assert "@example.com" not in caplog.text

@@ -140,6 +140,8 @@ jobs:
           name: global-investment-radar-${{ github.run_id }}
           path: |
             outputs/reports/**/*.html
+            outputs/email-audit/*.html
+            outputs/email-audit/*.json
             outputs/run-result.json
             outputs/run-diagnostics.log
           retention-days: 14

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import smtplib
 import ssl
 from collections.abc import Iterable
@@ -9,6 +10,8 @@ from typing import Protocol
 
 from radar.audience import normalize_email, validate_email
 from radar.config import PROJECT_ROOT, Settings
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_recipients(
@@ -88,6 +91,13 @@ class SMTPEmailSender:
         recipients = normalize_recipients(self.settings.email_to)
         if not recipients:
             raise ValueError("Missing SMTP configuration: EMAIL_TO")
+        raw_count = sum(bool(value.strip()) for value in self.settings.email_to.split(","))
+        logger.info(
+            "SMTP recipient counts raw=%d normalized=%d deduplicated=%d",
+            raw_count,
+            len(recipients),
+            raw_count - len(recipients),
+        )
         return self._send_message(
             recipients=recipients,
             subject=subject,
