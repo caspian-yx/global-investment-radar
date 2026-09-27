@@ -75,6 +75,28 @@ from radar.story import STORY_RULE_VERSION, consolidate_stories
 logger = logging.getLogger(__name__)
 
 
+class _PipelineStageTimer:
+    def __init__(self, started_at: float, *, deadline_seconds: float) -> None:
+        self._started_at = started_at
+        self._stage_started_at = started_at
+        self._deadline_seconds = deadline_seconds
+
+    def finish(self, stage: str, *, enforce_deadline: bool = True) -> None:
+        finished_at = time.perf_counter()
+        logger.info(
+            "Pipeline stage finished stage=%s elapsed_seconds=%.3f total_elapsed_seconds=%.3f "
+            "deadline_seconds=%.3f remaining_seconds=%.3f",
+            stage,
+            finished_at - self._stage_started_at,
+            finished_at - self._started_at,
+            self._deadline_seconds,
+            max(0.0, self._deadline_seconds - (finished_at - self._started_at)),
+        )
+        self._stage_started_at = finished_at
+        if enforce_deadline and finished_at - self._started_at > self._deadline_seconds:
+            raise RuntimeError(f"Pipeline latency deadline exceeded after stage {stage}.")
+
+
 def _initial_ai_status(settings: Settings) -> str:
     if not settings.effective_ai_enabled:
         return "disabled"
@@ -150,8 +172,12 @@ def run_daily(
         data_mode=settings.data_mode,
         ai_status=ai_status,
     )
-
+    stage_timer = _PipelineStageTimer(
+        timer_started,
+        deadline_seconds=settings.pipeline_deadline_seconds,
+    )
     try:
+        stage_timer.finish("startup")
         return _run_started_pipeline(
             settings=settings,
             started_at=started_at,
@@ -163,6 +189,7 @@ def run_daily(
             llm=llm,
             store=store,
             timer_started=timer_started,
+            stage_timer=stage_timer,
             audience=audience,
         )
     except Exception as exc:
@@ -203,6 +230,7 @@ def _run_started_pipeline(
     llm: AnalysisProvider,
     store: RadarStore,
     timer_started: float,
+    stage_timer: _PipelineStageTimer,
     audience: bool,
 ) -> PipelineResult:
     providers = build_providers(settings, universe)
@@ -296,6 +324,7 @@ def _run_started_pipeline(
     logger.info("Document ingestion deduplication diagnostics=%s", document_dedupe.diagnostics)
     markets = _flatten(batch.markets for batch in batches)
     macro = _flatten(batch.macro for batch in batches)
+    stage_timer.finish("collection")
     macro_source_document_ids = {
         item.source_document_id for item in macro if item.source_document_id is not None
     }
@@ -337,6 +366,7 @@ def _run_started_pipeline(
         discovery.diagnostics.model_dump(mode="json"),
         market_discovery.diagnostics.model_dump(mode="json"),
     )
+    stage_timer.finish("discovery")
     official_events, official_claims, official_evidence = extract_story_events(
         story_consolidation.stories,
         story_documents_by_id.values(),
@@ -411,6 +441,7 @@ def _run_started_pipeline(
             *macro_backdrop_evidence,
         ]
     )
+    stage_timer.finish("evidence_resolution")
     candidate_events = unique_by_id([*official_events, *macro_events])
     relationships = build_event_target_relationships(
         target_events=market_events,
@@ -495,6 +526,7 @@ def _run_started_pipeline(
         candidate for bundle in explanation_bundles for candidate in bundle.driver_candidates
     ]
     generation_bundles = [bundle for bundle in explanation_bundles if bundle.driver_candidates]
+    stage_timer.finish("market_intelligence")
     generation_provider = None
     if settings.effective_ai_enabled and generation_bundles:
         try:
@@ -545,7 +577,7 @@ def _run_started_pipeline(
     evidence_map = {item.id: item for item in evidence}
     source_map = {item.id: item for item in documents}
     analyses = []
-    for event in events[:6]:
+    for request_number, event in enumerate(events[:6], start=1):
         pack = EvidencePack(
             event=event.model_copy(deep=True),
             claims=[claim_map[item_id].model_copy(deep=True) for item_id in event.claim_ids],
@@ -556,8 +588,16 @@ def _run_started_pipeline(
                 source_map[item_id].model_copy(deep=True) for item_id in event.source_document_ids
             ],
         )
+        analysis_started = time.perf_counter()
+        logger.info(
+            "AI analysis request started provider=%s request=%d event_id=%s retry=0",
+            llm.name,
+            request_number,
+            event.id,
+        )
         try:
             analyses.append(llm.analyze(pack))
+            analysis_outcome = "success"
         except Exception as exc:
             logger.exception("Optional AI analysis failed; deterministic report will continue")
             analyses.append(
@@ -571,6 +611,16 @@ def _run_started_pipeline(
                     warnings=[f"{type(exc).__name__}: {exc}"],
                 )
             )
+            analysis_outcome = "fallback"
+        logger.info(
+            "AI analysis request finished provider=%s request=%d event_id=%s "
+            "outcome=%s elapsed_seconds=%.3f retry=0",
+            llm.name,
+            request_number,
+            event.id,
+            analysis_outcome,
+            time.perf_counter() - analysis_started,
+        )
     ai_status = _resolve_ai_status(
         settings,
         ai_enrichment,
@@ -578,6 +628,7 @@ def _run_started_pipeline(
         has_bundles=bool(generation_bundles),
         provider_available=generation_provider is not None,
     )
+    stage_timer.finish("ai")
 
     store.save_documents(run_id, documents)
     store.save_stories(run_id, story_consolidation.stories)
@@ -589,6 +640,7 @@ def _run_started_pipeline(
     store.save_markets(run_id, markets)
     store.save_c7_scores(run_id, c7_scores)
     store.save_market_impacts(run_id, c8_evaluation.records)
+    stage_timer.finish("persistence")
 
     expected_market_count = sum(
         batch.diagnostics.get("market_items_expected", 0) for batch in batches
@@ -729,6 +781,7 @@ def _run_started_pipeline(
         "C9.1 localization diagnostics=%s",
         localization_diagnostics.model_dump(mode="json"),
     )
+    stage_timer.finish("localization")
 
     benchmark = benchmark_from_documents(documents)
     evidence_resolved_ids = {
@@ -779,14 +832,16 @@ def _run_started_pipeline(
         created_at=datetime.now(UTC),
     )
     logger.info("Report generated path=%s html_sha256=%s", report_path, html_hash)
+    stage_timer.finish("rendering")
+
+    if quality.status is ReportQualityStatus.INSUFFICIENT:
+        raise RuntimeError("Insufficient data quality gate rejected the daily report.")
 
     subject = (
         f"Global Investment Radar — {report_date} 全球投资晨报"
         if localized_content is not None
         else f"Global Investment Radar — {report_date}"
     )
-    if quality.status is ReportQualityStatus.INSUFFICIENT:
-        subject = f"INSUFFICIENT DATA — {subject}"
     audience_details: dict[str, object] = {
         "requested": audience,
         "enabled": settings.audience_enabled,
@@ -837,9 +892,7 @@ def _run_started_pipeline(
             )
             raise RuntimeError(f"Email delivery failed ({type(exc).__name__}).") from None
         logger.info("Email delivery finished status=%s", email_status)
-
-    if quality.status is ReportQualityStatus.INSUFFICIENT:
-        raise RuntimeError("Insufficient data quality gate rejected the daily report.")
+    stage_timer.finish("delivery", enforce_deadline=False)
 
     elapsed_seconds = round(time.perf_counter() - timer_started, 3)
     result = PipelineResult(

@@ -27,25 +27,25 @@ class Settings(BaseSettings):
         default="development", validation_alias="APP_ENV"
     )
     data_mode: Literal["demo", "live"] = Field(default="demo", validation_alias="DATA_MODE")
-    database_url: str = Field(
-        default="sqlite:///work/radar.db", validation_alias="DATABASE_URL"
-    )
+    database_url: str = Field(default="sqlite:///work/radar.db", validation_alias="DATABASE_URL")
     report_output_dir: Path = Field(
         default=Path("outputs/reports"), validation_alias="REPORT_OUTPUT_DIR"
     )
-    business_timezone: str = Field(
-        default="Asia/Shanghai", validation_alias="BUSINESS_TIMEZONE"
-    )
+    business_timezone: str = Field(default="Asia/Shanghai", validation_alias="BUSINESS_TIMEZONE")
     universe_path: Path = Field(
         default=Path("config/universe.json"), validation_alias="UNIVERSE_PATH"
     )
     radar_view_id: str = Field(default="global", validation_alias="RADAR_VIEW_ID", min_length=1)
     lookback_hours: int = Field(default=48, validation_alias="LOOKBACK_HOURS", ge=1, le=168)
+    pipeline_deadline_seconds: float = Field(
+        default=1200.0,
+        validation_alias="PIPELINE_DEADLINE_SECONDS",
+        gt=0,
+        le=1320,
+    )
 
     ai_enabled: bool = Field(default=False, validation_alias="AI_ENABLED")
-    daily_llm_budget: float = Field(
-        default=0.0, validation_alias="DAILY_LLM_BUDGET", ge=0
-    )
+    daily_llm_budget: float = Field(default=0.0, validation_alias="DAILY_LLM_BUDGET", ge=0)
     ai_max_requests_per_run: int = Field(
         default=10,
         validation_alias="AI_MAX_REQUESTS_PER_RUN",
@@ -61,15 +61,11 @@ class Settings(BaseSettings):
         validation_alias="AI_MAX_OUTPUT_TOKENS_PER_RUN",
         ge=0,
     )
-    localization_enabled: bool = Field(
-        default=False, validation_alias="LOCALIZATION_ENABLED"
-    )
+    localization_enabled: bool = Field(default=False, validation_alias="LOCALIZATION_ENABLED")
     localization_locale: Literal["zh-CN"] = Field(
         default="zh-CN", validation_alias="LOCALIZATION_LOCALE"
     )
-    localization_model: str | None = Field(
-        default=None, validation_alias="LOCALIZATION_MODEL"
-    )
+    localization_model: str | None = Field(default=None, validation_alias="LOCALIZATION_MODEL")
     localization_timeout_seconds: float = Field(
         default=90.0,
         validation_alias="LOCALIZATION_TIMEOUT_SECONDS",

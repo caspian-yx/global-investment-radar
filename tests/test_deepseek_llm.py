@@ -276,7 +276,7 @@ def test_deepseek_http_errors_are_owned_and_sanitized(
     assert "internal details" not in message
 
 
-def test_deepseek_timeout_is_translated_without_retry() -> None:
+def test_deepseek_timeout_is_translated_without_retry(caplog) -> None:
     attempts = 0
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -290,6 +290,8 @@ def test_deepseek_timeout_is_translated_without_retry() -> None:
         provider.generate(LLMRequest(prompt="hello"))
     assert caught.value.phase == "read"
     assert attempts == 1
+    assert "LLM request finished provider=deepseek outcome=timeout phase=read" in caplog.text
+    assert "contains transport details" not in caplog.text
 
 
 @pytest.mark.parametrize(

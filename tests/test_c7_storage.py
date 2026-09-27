@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import event
+
 from radar.importance import (
     C7_RULE_VERSION,
     C7Score,
@@ -44,9 +46,21 @@ def _score(
 def test_c7_migration_is_additive_repeatable_and_round_trips_multiple_views(tmp_path) -> None:
     store = RadarStore(f"sqlite:///{(tmp_path / 'c7.db').as_posix()}")
     store.initialize()
+    transaction_count = 0
+
+    def count_transaction(_connection) -> None:
+        nonlocal transaction_count
+        transaction_count += 1
+
+    event.listen(store.engine, "begin", count_transaction)
     store.initialize()
+    transaction_count = 0
     store.save_c7_scores("run-1", [_score(), _score(view_id="us")])
+    assert transaction_count == 1
+
+    transaction_count = 0
     store.save_c7_scores("run-1", [_score(), _score(view_id="us")])
+    assert transaction_count == 1
 
     assert store.load_c7_scores("run-1", "global", C7_RULE_VERSION) == [_score()]
     assert store.load_c7_scores("run-1", "us", C7_RULE_VERSION) == [_score(view_id="us")]
