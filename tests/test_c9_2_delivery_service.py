@@ -127,6 +127,35 @@ class _Sender:
         return "accepted"
 
 
+class _BatchSender:
+    def __init__(self) -> None:
+        self.batch_calls: list[tuple[tuple[str, ...], str, str]] = []
+
+    def send_to(self, *, recipient: str, subject: str, html: str) -> str:
+        raise AssertionError(f"individual send leaked: {recipient}")
+
+    def send_many(self, *, recipients: tuple[str, ...], subject: str, html: str) -> str:
+        self.batch_calls.append((recipients, subject, html))
+        return "accepted"
+
+
+def test_audience_groups_identical_rendered_messages_into_one_envelope(tmp_path) -> None:
+    store = _store(tmp_path)
+    service = AudienceService(store, _settings())
+    service.add_recipient("A", "a@example.com", DeliveryMode.ENGLISH, None)
+    service.add_recipient("B", "b@example.com", DeliveryMode.ENGLISH, None)
+    briefing, _ = _compose()
+    sender = _BatchSender()
+
+    summary = service.deliver_briefing_to_audience(briefing, None, sender)
+
+    assert summary.attempted_count == 2
+    assert summary.sent_count == 2
+    assert len(sender.batch_calls) == 1
+    assert set(sender.batch_calls[0][0]) == {"a@example.com", "b@example.com"}
+    assert len(store.list_delivery_records(briefing.run_id)) == 2
+
+
 def test_delivery_identity_is_deterministic_and_each_recipient_is_independent(tmp_path) -> None:
     store = _store(tmp_path)
     service = AudienceService(store, _settings())

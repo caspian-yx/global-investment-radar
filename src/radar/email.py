@@ -42,6 +42,8 @@ class EmailSender(Protocol):
 class RecipientEmailSender(Protocol):
     def send_to(self, *, recipient: str, subject: str, html: str) -> str: ...
 
+    def send_many(self, *, recipients: tuple[str, ...], subject: str, html: str) -> str: ...
+
 
 class DisabledEmailSender:
     name = "disabled"
@@ -109,6 +111,12 @@ class SMTPEmailSender:
         if len(recipients) != 1:
             raise ValueError("recipient must not be blank")
         return self._send_message(recipients=recipients, subject=subject, html=html)
+
+    def send_many(self, *, recipients: tuple[str, ...], subject: str, html: str) -> str:
+        normalized = normalize_recipients(recipients)
+        if not normalized:
+            raise ValueError("recipients must not be blank")
+        return self._send_message(recipients=normalized, subject=subject, html=html)
 
     def _send_message(self, *, recipients: tuple[str, ...], subject: str, html: str) -> str:
         message = EmailMessage()
