@@ -162,10 +162,10 @@ def test_no_ai_demo_pipeline_generates_html(tmp_path, monkeypatch) -> None:
     assert result.c9_discovery["market_discovery"]["markets_evaluated"] == 11
     assert result.c9_discovery["coverage_audit"]["measurable"] is True
     html = report.read_text(encoding="utf-8")
-    assert "DEMO DATA" in html
-    assert "AI is off" in html
-    assert "Things That Matter" in html
-    assert "Sources &amp; Data Quality" in html
+    assert "演示数据" in html
+    assert "AI 未启用" in html
+    assert "今日焦点" in html
+    assert "来源 / 数据质量" in html
     assert "Radar macro backdrop: U.S. 10Y Treasury Yield" not in html
     assert transitions == ["completed"]
 
@@ -400,8 +400,8 @@ def test_fake_llm_is_visibly_marked(tmp_path) -> None:
         encoding="utf-8"
     )
     assert result.ai_status == "test-data"
-    assert "TEST AI OUTPUT" in html
-    assert "Any AI-assisted prose is synthetic" in html
+    assert "测试用 AI 内容" in html
+    assert "仅用于验证，不代表真实分析" in html
 
 
 def test_fake_llm_is_blocked_in_production(tmp_path) -> None:
@@ -419,7 +419,7 @@ def test_fake_llm_is_blocked_in_production(tmp_path) -> None:
         encoding="utf-8"
     )
     assert result.ai_status == "disabled"
-    assert "TEST AI OUTPUT" not in html
+    assert "测试用 AI 内容" not in html
 
 
 def test_ai_status_resolver_distinguishes_disabled_success_partial_and_failure() -> None:
@@ -616,9 +616,9 @@ def test_no_official_items_does_not_make_supported_report_insufficient(
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
-    assert "No strong Story met today’s primary threshold" in html
-    assert "Market Snapshot" in html
-    assert "No validated linked reaction is available" in html
+    assert "本期没有故事达到主标题门槛" in html
+    assert "市场总览" in html
+    assert "跨资产情报" in html
 
 
 def test_insufficient_data_generates_diagnostic_report_and_exits_nonzero(
@@ -646,7 +646,7 @@ def test_insufficient_data_generates_diagnostic_report_and_exits_nonzero(
 
     report = tmp_path / "reports" / "global-investment-radar-2026-09-07.html"
     assert report.exists()
-    assert "INSUFFICIENT DATA" in report.read_text(encoding="utf-8")
+    assert "数据不足，报告不可投递" in report.read_text(encoding="utf-8")
     store = RadarStore(settings.database_url)
     with store.engine.connect() as connection:
         status = connection.execute(select(runs.c.status)).scalar_one()
@@ -683,6 +683,7 @@ def test_insufficient_data_never_becomes_email_eligible(tmp_path, monkeypatch) -
         run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
     assert subjects == []
+    assert not (tmp_path / "email-audit").exists()
 
 
 def test_insufficient_data_returns_nonzero_from_cli(tmp_path, monkeypatch) -> None:
@@ -875,7 +876,7 @@ def test_pipeline_combines_official_market_and_macro_events_before_optional_llm(
     assert "+2.00%" in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<script>alert(1)</script>" not in html
-    assert "Things That Matter" in html
+    assert "今日焦点" in html
     assert "test-market" not in html
     assert 'href="test-market"' not in html
     assert 'href="bls-public-api"' not in html
@@ -1038,7 +1039,7 @@ def test_quiet_day_with_zero_events_is_a_valid_report(tmp_path, monkeypatch) -> 
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-09.html").read_text(
         encoding="utf-8"
     )
-    assert "No strong Story met today’s primary threshold" in html
+    assert "本期没有故事达到主标题门槛" in html
 
 
 def test_market_event_alone_does_not_supply_official_quality_support(tmp_path, monkeypatch) -> None:
@@ -1147,7 +1148,7 @@ def test_structured_ai_configuration_failure_keeps_deterministic_report(
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
-    assert "Things That Matter" in html
+    assert "今日焦点" in html
     assert "AI explanation" not in html
 
 
@@ -1200,7 +1201,7 @@ def test_zero_ai_request_budget_uses_single_guarded_seam_and_keeps_report(
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-07.html").read_text(
         encoding="utf-8"
     )
-    assert "Things That Matter" in html
+    assert "今日焦点" in html
     assert "AI explanation" not in html
 
 
@@ -1335,7 +1336,7 @@ def test_c6_rejects_sec_ponzi_before_c2_and_empty_bundle_uses_zero_ai_requests(
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-11.html").read_text(
         encoding="utf-8"
     )
-    assert "Things That Matter" in html
+    assert "今日焦点" in html
 
 
 def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
@@ -1414,7 +1415,7 @@ def test_successful_structured_ai_enrichment_reaches_report_by_target_id(
         encoding="utf-8"
     )
     assert "Generated explanation for" in html
-    assert "AI is off" not in html
+    assert "AI 未启用" not in html
 
 
 def test_deterministic_events_are_available_before_optional_llm(tmp_path, monkeypatch) -> None:
@@ -1835,7 +1836,7 @@ def test_report_renders_context_only_for_vix_and_equity_weakness(tmp_path, monke
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-10.html").read_text(
         encoding="utf-8"
     )
-    assert "Market Snapshot" in html
+    assert "市场总览" in html
     assert "VIX" in html
-    assert "No strong Story met today’s primary threshold" in html
-    assert "No watch item was inferred" in html
+    assert "本期没有故事达到主标题门槛" in html
+    assert "暂无经过验证的关注事项" in html

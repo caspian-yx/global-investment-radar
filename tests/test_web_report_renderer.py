@@ -32,7 +32,7 @@ def test_web_and_email_renderers_have_separate_presentation_contracts() -> None:
     email = EmailHtmlReportRenderer().render(context)
 
     assert "Market Regime" in web
-    assert "Volatility &amp; Rates" in web
+    assert "波动率与利率" in web
     assert "<svg" in web
     assert "backdrop-filter" in web
     assert "display:grid" in web
@@ -81,7 +81,7 @@ def test_email_renderer_carries_the_c7_intelligence_product_in_email_safe_markup
         "Sources &amp; Data Quality",
     ):
         assert section in email
-    assert "CAUTIOUS" in email
+    assert "Cautious" in email
     assert "VIX" in email
     assert "VXN" in email
     assert "US 10Y Treasury" in email
@@ -139,7 +139,7 @@ def test_china_indices_render_even_when_sector_coverage_is_unavailable() -> None
 
     china = html.split('id="china-a-shares"', 1)[1].split('id="cross-asset"', 1)[0]
     assert "Hang Seng" in china
-    assert "Sector ranking appears only when structured sector observations are available." in china
+    assert "仅在取得结构化行业数据时展示行业排名。" in china
 
 
 def test_web_renderer_honors_major_visual_budget_for_risk_and_china_visuals() -> None:
@@ -157,7 +157,7 @@ def test_web_renderer_honors_major_visual_budget_for_risk_and_china_visuals() ->
         )
     )
 
-    assert "Visual budget 2 / 2" in html
+    assert "主要图表 2 / 2" in html
     assert html.count("<svg") <= 1
 
 
@@ -184,6 +184,9 @@ def test_pipeline_saves_web_html_but_sends_email_safe_html(tmp_path, monkeypatch
         name = "capture"
 
         def send(self, *, subject: str, html: str) -> str:
+            pre_send_bodies = list((tmp_path / "email-audit").glob("*.html"))
+            assert len(pre_send_bodies) == 1
+            assert pre_send_bodies[0].read_bytes() == html.encode("utf-8")
             captured["subject"] = subject
             captured["html"] = html
             return "captured"
@@ -209,3 +212,15 @@ def test_pipeline_saves_web_html_but_sends_email_safe_html(tmp_path, monkeypatch
     assert "display:grid" not in captured["html"]
     assert "backdrop-filter" not in captured["html"]
     assert "<script" not in captured["html"].casefold()
+    audit_bodies = list((tmp_path / "email-audit").glob("*.html"))
+    audit_manifests = list((tmp_path / "email-audit").glob("*.json"))
+    assert len(audit_bodies) == len(audit_manifests) == 1
+    assert audit_bodies[0].read_bytes() == captured["html"].encode("utf-8")
+    import hashlib
+    import json
+
+    manifest = json.loads(audit_manifests[0].read_text(encoding="utf-8"))
+    assert manifest["run_id"] == result.run_id
+    assert manifest["sha256"] == hashlib.sha256(captured["html"].encode("utf-8")).hexdigest()
+    assert manifest["renderer"] == "daily_email.html.j2"
+    assert "@" not in audit_manifests[0].read_text(encoding="utf-8")

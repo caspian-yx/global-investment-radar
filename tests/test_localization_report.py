@@ -42,7 +42,7 @@ def test_localized_report_is_chinese_first_and_keeps_english_reference() -> None
     assert "市场信号" in html
     assert "English reference / 英文原文" in html
     assert "Today’s Focus" in html
-    assert "Evidence-linked intelligence, not investment advice." in html
+    assert "简报基于可追溯证据，不构成投资建议。" in html
     assert "<script" not in html.casefold()
     assert "briefing_id" not in html
     body = html.split("<body", 1)[1]
@@ -181,8 +181,11 @@ def test_localized_web_story_lookup_follows_event_key_after_freshness_demotes_st
     )
 
     expected = updated.primary_stories[1]
-    assert f"中文标题：{expected.headline}" in html
-    assert f"中文标题：{updated.primary_stories[0].headline}" not in html
+    overnight = html.split('id="overnight"', 1)[1].split('id="watch-next"', 1)[0]
+    secondary = html.split('id="secondary"', 1)[1].split('id="brief"', 1)[0]
+    assert f"中文标题：{expected.headline}" in overnight
+    assert f"中文标题：{updated.primary_stories[0].headline}" not in overnight
+    assert f"中文标题：{updated.primary_stories[0].headline}" in secondary
 
 
 def test_localized_web_report_includes_canonical_english_reference_when_bilingual() -> None:

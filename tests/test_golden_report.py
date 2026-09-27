@@ -48,15 +48,17 @@ def test_2026_09_17_golden_market_intelligence_web_report() -> None:
 
     assert briefing.primary_stories[0].event_type.value == "policy"
     assert "WTI Crude Futures" in html
-    assert "UNEXPLAINED_MAJOR_MOVE" in html
+    assert "UNEXPLAINED_MAJOR_MOVE" not in html
+    assert "尚无已验证的原因" in html
     assert "VIX" in html and "VXN" in html
-    assert "US 2Y Treasury Yield" in html and "US 10Y Treasury Yield" in html
-    assert "US_TECH_RELATIVE_STRENGTH" in html
-    assert "TECH_RISK_CONCENTRATION_CANDIDATE" in html
+    assert "美国2年期国债" in html and "美国10年期国债" in html
+    assert "US_TECH_RELATIVE_STRENGTH" not in html
+    assert "TECH_RISK_CONCENTRATION_CANDIDATE" not in html
+    assert "科技股相对韧性" in html
     assert "通信" in html and "电子" in html and "Technology / Growth" in html
-    assert "Driver unresolved" in html
+    assert "主要驱动暂未确认" in html
     assert len(intelligence.major_visuals) <= 2
-    assert "Global Investment Radar — 2026-09-17" in html
+    assert "全球投资雷达 · 2026-09-17" in html
 
 
 def test_stale_story_is_demoted_to_secondary_without_mutating_briefing() -> None:
@@ -120,9 +122,9 @@ def test_golden_report_exposes_generic_freshness_decision_and_rank_change() -> N
         )
     )
 
-    assert "DEMOTE_SECONDARY" in html
-    assert "Day+1" in html
-    assert "Secondary / Decayed" in html
-    assert "previous #" in html
+    assert "DEMOTE_SECONDARY" not in html
+    assert "隔日观察窗口" in html
+    assert "次要进展" in html
+    assert "此前排名 #" in html
     assert "WTI Crude Futures" in html
     assert tuple(item.event_id for item in updated.primary_stories)[-1] == stale.event_id

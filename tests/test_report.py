@@ -195,4 +195,4 @@ def test_low_activity_and_demo_states_are_explicit_and_complete() -> None:
     assert "No item cleared freshness, value and evidence thresholds" in html
     assert "No distinct market signal cleared" in html
     assert "No validated future catalyst is available" in html
-    assert "DEMO DATA" in html
+    assert "Demo data" in html

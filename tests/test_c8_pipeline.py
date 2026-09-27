@@ -70,9 +70,7 @@ def test_story_to_c7_to_c8_to_report_preserves_c6_c2_path(tmp_path, monkeypatch)
     )
 
     result = run_daily(settings, now=now)
-    impacts = RadarStore(settings.database_url).load_market_impacts(
-        result.run_id, C8_RULE_VERSION
-    )
+    impacts = RadarStore(settings.database_url).load_market_impacts(result.run_id, C8_RULE_VERSION)
     html = (tmp_path / "reports" / "global-investment-radar-2026-09-12.html").read_text(
         encoding="utf-8"
     )
@@ -80,7 +78,7 @@ def test_story_to_c7_to_c8_to_report_preserves_c6_c2_path(tmp_path, monkeypatch)
     assert len(impacts) == 1
     assert impacts[0].epistemic_status is EpistemicStatus.ASSOCIATED
     assert result.driver_candidates == 1
-    assert "Market reaction" in html
+    assert "跨资产情报" in html
     assert "S&amp;P 500" in html
     assert "-2.00%" in html
     assert "caused by" not in html.casefold()

@@ -29,8 +29,8 @@ def test_pipeline_persists_all_view_scores_and_renders_selected_view(tmp_path) -
     assert len(selected) == result.events
     assert len(global_scores) == result.events
     assert [item.priority_rank for item in selected] == list(range(1, result.events + 1))
-    assert "Things That Matter" in html
-    assert "AI / Semiconductors" in html
+    assert "今日焦点" in html
+    assert "AI / 半导体" in html
 
 
 def test_c7_scores_do_not_replace_legacy_event_importance(tmp_path) -> None:
