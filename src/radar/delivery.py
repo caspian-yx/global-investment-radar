@@ -341,6 +341,7 @@ class AudienceService:
     ) -> AudienceDeliverySummary:
         recipients = self.preflight(briefing, explicit_audience=True)
         attempted = sent = failed = skipped = 0
+        pending: list[tuple[RecipientProfile, DeliveryRecord]] = []
         for recipient in recipients:
             rendered = self._render(
                 briefing,
@@ -378,28 +379,84 @@ class AudienceService:
                 skipped += 1
                 continue
             attempted += 1
+            pending.append((recipient, record))
+
+        groups: dict[tuple[str, str], list[tuple[RecipientProfile, DeliveryRecord]]] = {}
+        for recipient, record in pending:
+            groups.setdefault((record.subject, record.html_hash or ""), []).append(
+                (recipient, record)
+            )
+        for group in groups.values():
+            subject = group[0][1].subject
+            html = self._render(
+                briefing,
+                group[0][0],
+                localized=localized,
+                markets=markets,
+                assets=assets,
+            ).html
+            send_many = getattr(sender, "send_many", None)
+            if not callable(send_many):
+                for recipient, record in group:
+                    try:
+                        sender.send_to(recipient=recipient.email, subject=subject, html=html)
+                    except Exception as exc:
+                        failed += 1
+                        self.store.save_delivery_record(
+                            record.model_copy(
+                                update={
+                                    "status": DeliveryStatus.FAILED,
+                                    "error_type": type(exc).__name__[:80],
+                                }
+                            )
+                        )
+                    else:
+                        sent += 1
+                        self.store.save_delivery_record(
+                            record.model_copy(
+                                update={
+                                    "status": DeliveryStatus.SENT,
+                                    "accepted_at": datetime.now(UTC),
+                                }
+                            )
+                        )
+                continue
             try:
-                sender.send_to(
-                    recipient=recipient.email, subject=rendered.subject, html=rendered.html
-                )
+                self._send_group(sender, group, subject=subject, html=html)
             except Exception as exc:
-                failed += 1
+                failed += len(group)
+                for _, record in group:
+                    self.store.save_delivery_record(
+                        record.model_copy(
+                            update={
+                                "status": DeliveryStatus.FAILED,
+                                "error_type": type(exc).__name__[:80],
+                            }
+                        )
+                    )
+                continue
+            sent += len(group)
+            for _, record in group:
                 self.store.save_delivery_record(
                     record.model_copy(
-                        update={
-                            "status": DeliveryStatus.FAILED,
-                            "error_type": type(exc).__name__[:80],
-                        }
+                        update={"status": DeliveryStatus.SENT, "accepted_at": datetime.now(UTC)}
                     )
                 )
-                continue
-            sent += 1
-            self.store.save_delivery_record(
-                record.model_copy(
-                    update={"status": DeliveryStatus.SENT, "accepted_at": datetime.now(UTC)}
-                )
-            )
         return AudienceDeliverySummary(attempted, sent, failed, skipped)
+
+    @staticmethod
+    def _send_group(
+        sender: RecipientEmailSender,
+        group: list[tuple[RecipientProfile, DeliveryRecord]],
+        *,
+        subject: str,
+        html: str,
+    ) -> None:
+        sender.send_many(
+            recipients=tuple(recipient.email for recipient, _ in group),
+            subject=subject,
+            html=html,
+        )
 
     def _require_recipient(self, recipient_id: str) -> RecipientProfile:
         recipient = self.store.load_recipient(recipient_id)
