@@ -17,11 +17,15 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    and_,
+    bindparam,
     create_engine,
     inspect,
     select,
     text,
 )
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -1275,6 +1279,7 @@ class RadarStore:
             "id": run_id,
             "run_key": run_key,
             "started_at": started_at,
+            "completed_at": None,
             "status": "running",
             "data_mode": data_mode,
             "ai_status": ai_status,
@@ -1307,24 +1312,28 @@ class RadarStore:
             )
 
     def save_documents(self, run_id: str, items: Iterable[SourceDocument]) -> None:
-        for item in items:
-            self._upsert(
-                source_documents,
-                item.id,
-                {
-                    "id": item.id,
-                    "run_id": run_id,
-                    "provider": item.provider,
-                    "source_tier": item.source_tier.value,
-                    "publisher": item.publisher,
-                    "canonical_url": item.canonical_url,
-                    "title": item.title,
-                    "published_at": item.published_at,
-                    "content_hash": item.content_hash,
-                    "payload_json": item.model_dump_json(),
-                    "is_demo": item.is_demo,
-                },
-            )
+        self._upsert_many(
+            source_documents,
+            (
+                (
+                    item.id,
+                    {
+                        "id": item.id,
+                        "run_id": run_id,
+                        "provider": item.provider,
+                        "source_tier": item.source_tier.value,
+                        "publisher": item.publisher,
+                        "canonical_url": item.canonical_url,
+                        "title": item.title,
+                        "published_at": item.published_at,
+                        "content_hash": item.content_hash,
+                        "payload_json": item.model_dump_json(),
+                        "is_demo": item.is_demo,
+                    },
+                )
+                for item in items
+            ),
+        )
 
     def load_source_documents(self, document_ids: Iterable[str]) -> list[SourceDocument]:
         ids = sorted(set(document_ids))
@@ -1338,15 +1347,47 @@ class RadarStore:
         return sorted(documents, key=lambda item: item.id)
 
     def save_stories(self, run_id: str, items: Iterable[Story]) -> None:
-        for item in items:
-            with self.engine.begin() as connection:
-                persisted_document_ids = set(
-                    connection.execute(
-                        select(source_documents.c.id).where(
-                            source_documents.c.id.in_(item.source_document_ids)
-                        )
-                    ).scalars()
-                )
+        materialized = list(items)
+        if not materialized:
+            return
+        document_ids = sorted(
+            {document_id for item in materialized for document_id in item.source_document_ids}
+        )
+        story_ids = [item.id for item in materialized]
+        seed_ids = sorted({item.identity_seed_document_id for item in materialized})
+        rule_versions = sorted({item.rule_version for item in materialized})
+        with self.engine.begin() as connection:
+            persisted_document_ids = set(
+                connection.execute(
+                    select(source_documents.c.id).where(source_documents.c.id.in_(document_ids))
+                ).scalars()
+            )
+            existing_rows = {
+                str(row["id"]): row
+                for row in connection.execute(
+                    select(
+                        stories_table.c.id,
+                        stories_table.c.created_run_id,
+                        stories_table.c.payload_json,
+                    ).where(stories_table.c.id.in_(story_ids))
+                ).mappings()
+            }
+            persisted_seeds = {
+                (str(row["identity_seed_document_id"]), str(row["rule_version"])): str(row["id"])
+                for row in connection.execute(
+                    select(
+                        stories_table.c.id,
+                        stories_table.c.identity_seed_document_id,
+                        stories_table.c.rule_version,
+                    ).where(
+                        stories_table.c.identity_seed_document_id.in_(seed_ids),
+                        stories_table.c.rule_version.in_(rule_versions),
+                    )
+                ).mappings()
+            }
+            input_seeds: dict[tuple[str, str], str] = {}
+            rows: list[tuple[str, dict[str, Any]]] = []
+            for item in materialized:
                 missing_document_ids = sorted(
                     set(item.source_document_ids) - persisted_document_ids
                 )
@@ -1355,24 +1396,14 @@ class RadarStore:
                         "Story persistence is missing SourceDocument: "
                         + ", ".join(missing_document_ids)
                     )
-                row = (
-                    connection.execute(
-                        select(
-                            stories_table.c.created_run_id,
-                            stories_table.c.payload_json,
-                        ).where(stories_table.c.id == item.id)
-                    )
-                    .mappings()
-                    .first()
-                )
-                seed_row = connection.execute(
-                    select(stories_table.c.id).where(
-                        stories_table.c.identity_seed_document_id == item.identity_seed_document_id,
-                        stories_table.c.rule_version == item.rule_version,
-                    )
-                ).first()
-                if seed_row is not None and seed_row.id != item.id:
+                seed_identity = (item.identity_seed_document_id, item.rule_version)
+                input_seed_id = input_seeds.setdefault(seed_identity, item.id)
+                if input_seed_id != item.id:
                     raise ValueError("Story immutable identity conflicts with persisted seed")
+                persisted_seed_id = persisted_seeds.get(seed_identity)
+                if persisted_seed_id is not None and persisted_seed_id != item.id:
+                    raise ValueError("Story immutable identity conflicts with persisted seed")
+                row = existing_rows.get(item.id)
                 if row is not None:
                     existing = Story.model_validate_json(row["payload_json"])
                     if (
@@ -1384,28 +1415,40 @@ class RadarStore:
                     created_run_id = str(row["created_run_id"])
                 else:
                     created_run_id = run_id
-                self._upsert_connection(
-                    connection,
-                    stories_table,
-                    item.id,
-                    {
-                        "id": item.id,
-                        "created_run_id": created_run_id,
-                        "last_run_id": run_id,
-                        "identity_seed_document_id": item.identity_seed_document_id,
-                        "presentation_document_id": item.presentation_document_id,
-                        "rule_version": item.rule_version,
-                        "event_type": item.event_type.value,
-                        "earliest_trusted_published_at": (item.earliest_trusted_published_at),
-                        "latest_published_at": item.latest_published_at,
-                        "first_seen_at": item.first_seen_at,
-                        "last_seen_at": item.last_seen_at,
-                        "payload_json": item.model_dump_json(),
-                    },
+                rows.append(
+                    (
+                        item.id,
+                        {
+                            "id": item.id,
+                            "created_run_id": created_run_id,
+                            "last_run_id": run_id,
+                            "identity_seed_document_id": item.identity_seed_document_id,
+                            "presentation_document_id": item.presentation_document_id,
+                            "rule_version": item.rule_version,
+                            "event_type": item.event_type.value,
+                            "earliest_trusted_published_at": (item.earliest_trusted_published_at),
+                            "latest_published_at": item.latest_published_at,
+                            "first_seen_at": item.first_seen_at,
+                            "last_seen_at": item.last_seen_at,
+                            "payload_json": item.model_dump_json(),
+                        },
+                    )
                 )
+            self._upsert_many_connection(
+                connection,
+                stories_table,
+                rows,
+                immutable_conflict_columns=(
+                    "created_run_id",
+                    "identity_seed_document_id",
+                    "rule_version",
+                ),
+            )
 
     def save_c7_scores(self, run_id: str, items: Iterable[C7Score]) -> None:
         """Persist immutable C7 evaluations, retaining rows by rule version."""
+        rows: list[tuple[str, dict[str, Any]]] = []
+        natural_identities: dict[tuple[str, str, str, str], str] = {}
         for item in items:
             row_id = stable_id(
                 "c7-ranking",
@@ -1425,29 +1468,35 @@ class RadarStore:
                 "relevance_score": item.relevance_score,
                 "payload_json": item.model_dump_json(),
             }
-            with self.engine.begin() as connection:
-                existing = connection.execute(
-                    select(c7_rankings_table.c.payload_json).where(c7_rankings_table.c.id == row_id)
-                ).scalar_one_or_none()
-                if existing is not None:
-                    if existing != item.model_dump_json():
-                        connection.execute(
-                            c7_rankings_table.update()
-                            .where(c7_rankings_table.c.id == row_id)
-                            .values(**values)
-                        )
-                    continue
-                conflicting = connection.execute(
-                    select(c7_rankings_table.c.id).where(
-                        c7_rankings_table.c.run_id == run_id,
-                        c7_rankings_table.c.event_id == item.event_id,
-                        c7_rankings_table.c.view_id == item.view_id,
-                        c7_rankings_table.c.rule_version == item.rule_version,
-                    )
-                ).first()
-                if conflicting is not None and conflicting.id != row_id:
+            identity = (run_id, item.event_id, item.view_id, item.rule_version)
+            previous_id = natural_identities.setdefault(identity, row_id)
+            if previous_id != row_id:
+                raise ValueError("C7 score identity is not deterministic")
+            rows.append((row_id, values))
+
+        if not rows:
+            return
+        with self.engine.begin() as connection:
+            persisted = connection.execute(
+                select(
+                    c7_rankings_table.c.id,
+                    c7_rankings_table.c.run_id,
+                    c7_rankings_table.c.event_id,
+                    c7_rankings_table.c.view_id,
+                    c7_rankings_table.c.rule_version,
+                ).where(c7_rankings_table.c.run_id == run_id)
+            ).mappings()
+            for persisted_row in persisted:
+                identity = (
+                    str(persisted_row["run_id"]),
+                    str(persisted_row["event_id"]),
+                    str(persisted_row["view_id"]),
+                    str(persisted_row["rule_version"]),
+                )
+                expected_id = natural_identities.get(identity)
+                if expected_id is not None and persisted_row["id"] != expected_id:
                     raise ValueError("C7 score identity is not deterministic")
-                connection.execute(c7_rankings_table.insert().values(**values))
+            self._upsert_many_connection(connection, c7_rankings_table, rows)
 
     def load_c7_scores(self, run_id: str, view_id: str, rule_version: str) -> list[C7Score]:
         with self.engine.connect() as connection:
@@ -1464,6 +1513,8 @@ class RadarStore:
 
     def save_market_impacts(self, run_id: str, items: Iterable[MarketImpactRecord]) -> None:
         """Persist versioned C8 evaluations; refresh only an exact evaluation identity."""
+        rows: list[tuple[str, dict[str, Any]]] = []
+        natural_identities: dict[tuple[str, str, str, str, str], str] = {}
         for item in items:
             row_id = stable_id("c8-evaluation", f"{run_id}|{item.id}")
             payload = item.model_dump_json()
@@ -1483,32 +1534,43 @@ class RadarStore:
                 "epistemic_status": item.epistemic_status.value,
                 "payload_json": payload,
             }
-            with self.engine.begin() as connection:
-                existing = connection.execute(
-                    select(c8_market_impacts_table.c.payload_json).where(
-                        c8_market_impacts_table.c.id == row_id
-                    )
-                ).scalar_one_or_none()
-                if existing is not None:
-                    if existing != payload:
-                        connection.execute(
-                            c8_market_impacts_table.update()
-                            .where(c8_market_impacts_table.c.id == row_id)
-                            .values(**values)
-                        )
-                    continue
-                conflicting = connection.execute(
-                    select(c8_market_impacts_table.c.id).where(
-                        c8_market_impacts_table.c.run_id == run_id,
-                        c8_market_impacts_table.c.event_id == item.event_id,
-                        c8_market_impacts_table.c.target_symbol == item.target.symbol,
-                        c8_market_impacts_table.c.reaction_window == item.reaction_window.value,
-                        c8_market_impacts_table.c.rule_version == item.rule_version,
-                    )
-                ).first()
-                if conflicting is not None and conflicting.id != row_id:
+            identity = (
+                run_id,
+                item.event_id,
+                item.target.symbol,
+                item.reaction_window.value,
+                item.rule_version,
+            )
+            previous_id = natural_identities.setdefault(identity, row_id)
+            if previous_id != row_id:
+                raise ValueError("C8 market impact identity is not deterministic")
+            rows.append((row_id, values))
+
+        if not rows:
+            return
+        with self.engine.begin() as connection:
+            persisted = connection.execute(
+                select(
+                    c8_market_impacts_table.c.id,
+                    c8_market_impacts_table.c.run_id,
+                    c8_market_impacts_table.c.event_id,
+                    c8_market_impacts_table.c.target_symbol,
+                    c8_market_impacts_table.c.reaction_window,
+                    c8_market_impacts_table.c.rule_version,
+                ).where(c8_market_impacts_table.c.run_id == run_id)
+            ).mappings()
+            for persisted_row in persisted:
+                identity = (
+                    str(persisted_row["run_id"]),
+                    str(persisted_row["event_id"]),
+                    str(persisted_row["target_symbol"]),
+                    str(persisted_row["reaction_window"]),
+                    str(persisted_row["rule_version"]),
+                )
+                expected_id = natural_identities.get(identity)
+                if expected_id is not None and persisted_row["id"] != expected_id:
                     raise ValueError("C8 market impact identity is not deterministic")
-                connection.execute(c8_market_impacts_table.insert().values(**values))
+            self._upsert_many_connection(connection, c8_market_impacts_table, rows)
 
     def load_market_impacts(self, run_id: str, rule_version: str) -> list[MarketImpactRecord]:
         with self.engine.connect() as connection:
@@ -1890,16 +1952,39 @@ class RadarStore:
             return [Story.model_validate_json(payload) for payload in payloads]
 
     def save_story_memberships(self, items: Iterable[StoryDocumentMembership]) -> None:
-        for item in items:
-            with self.engine.begin() as connection:
-                row = connection.execute(
-                    select(story_documents_table.c.payload_json).where(
-                        story_documents_table.c.source_document_id == item.source_document_id,
-                        story_documents_table.c.rule_version == item.rule_version,
+        materialized = list(items)
+        if not materialized:
+            return
+        source_ids = sorted({item.source_document_id for item in materialized})
+        rule_versions = sorted({item.rule_version for item in materialized})
+        with self.engine.begin() as connection:
+            persisted_rows = {
+                (str(row["source_document_id"]), str(row["rule_version"])): row
+                for row in connection.execute(
+                    select(
+                        story_documents_table.c.id,
+                        story_documents_table.c.story_id,
+                        story_documents_table.c.source_document_id,
+                        story_documents_table.c.rule_version,
+                        story_documents_table.c.payload_json,
+                    ).where(
+                        story_documents_table.c.source_document_id.in_(source_ids),
+                        story_documents_table.c.rule_version.in_(rule_versions),
                     )
-                ).first()
+                ).mappings()
+            }
+            input_identities: dict[tuple[str, str], StoryDocumentMembership] = {}
+            new_items: list[StoryDocumentMembership] = []
+            for item in materialized:
+                identity = (item.source_document_id, item.rule_version)
+                previous = input_identities.setdefault(identity, item)
+                if previous.story_id != item.story_id:
+                    raise ValueError("SourceDocument cannot belong to multiple story-v1 Stories")
+                if previous.id != item.id:
+                    raise ValueError("Story membership identity is not deterministic")
+                row = persisted_rows.get(identity)
                 if row is not None:
-                    existing = StoryDocumentMembership.model_validate_json(row.payload_json)
+                    existing = StoryDocumentMembership.model_validate_json(row["payload_json"])
                     if existing.story_id != item.story_id:
                         raise ValueError(
                             "SourceDocument cannot belong to multiple story-v1 Stories"
@@ -1907,35 +1992,44 @@ class RadarStore:
                     if existing.id != item.id:
                         raise ValueError("Story membership identity is not deterministic")
                     continue
-                story_exists = connection.execute(
-                    select(stories_table.c.id).where(stories_table.c.id == item.story_id)
-                ).first()
-                if story_exists is None:
+                new_items.append(item)
+
+            story_ids = sorted({item.story_id for item in new_items})
+            document_ids = sorted({item.source_document_id for item in new_items})
+            existing_story_ids = set(
+                connection.execute(
+                    select(stories_table.c.id).where(stories_table.c.id.in_(story_ids))
+                ).scalars()
+            )
+            existing_document_ids = set(
+                connection.execute(
+                    select(source_documents.c.id).where(source_documents.c.id.in_(document_ids))
+                ).scalars()
+            )
+            rows: list[tuple[str, dict[str, Any]]] = []
+            for item in new_items:
+                if item.story_id not in existing_story_ids:
                     raise ValueError(f"Story membership references missing Story {item.story_id}")
-                document_exists = connection.execute(
-                    select(source_documents.c.id).where(
-                        source_documents.c.id == item.source_document_id
-                    )
-                ).first()
-                if document_exists is None:
+                if item.source_document_id not in existing_document_ids:
                     raise ValueError(
                         "Story membership references missing SourceDocument "
                         f"{item.source_document_id}"
                     )
-                self._upsert_connection(
-                    connection,
-                    story_documents_table,
-                    item.id,
-                    {
-                        "id": item.id,
-                        "story_id": item.story_id,
-                        "source_document_id": item.source_document_id,
-                        "match_method": item.match_method,
-                        "rule_version": item.rule_version,
-                        "first_linked_at": item.first_linked_at,
-                        "payload_json": item.model_dump_json(),
-                    },
+                rows.append(
+                    (
+                        item.id,
+                        {
+                            "id": item.id,
+                            "story_id": item.story_id,
+                            "source_document_id": item.source_document_id,
+                            "match_method": item.match_method,
+                            "rule_version": item.rule_version,
+                            "first_linked_at": item.first_linked_at,
+                            "payload_json": item.model_dump_json(),
+                        },
+                    )
                 )
+            self._upsert_many_connection(connection, story_documents_table, rows)
 
     def load_story_memberships(self, rule_version: str) -> list[StoryDocumentMembership]:
         with self.engine.connect() as connection:
@@ -1947,12 +2041,10 @@ class RadarStore:
             return [StoryDocumentMembership.model_validate_json(payload) for payload in payloads]
 
     def save_evidence(self, run_id: str, items: Iterable[Evidence]) -> None:
-        for item in items:
-            self._upsert(
-                evidence_table,
-                item.id,
-                self._evidence_values(run_id, item),
-            )
+        self._upsert_many(
+            evidence_table,
+            ((item.id, self._evidence_values(run_id, item)) for item in items),
+        )
 
     def load_evidence_for_source(self, source_kind: SourceKind, source_id: str) -> list[Evidence]:
         with self.engine.connect() as connection:
@@ -1979,36 +2071,36 @@ class RadarStore:
             return result
 
     def save_claims(self, run_id: str, items: Iterable[Claim]) -> None:
-        for item in items:
-            self._upsert(
-                claims_table,
-                item.id,
-                self._claim_values(run_id, item),
-            )
+        self._upsert_many(
+            claims_table,
+            ((item.id, self._claim_values(run_id, item)) for item in items),
+        )
 
     def save_events(self, run_id: str, items: Iterable[Event]) -> None:
-        for item in items:
-            self._upsert(
-                events_table,
-                item.id,
-                self._event_values(run_id, item),
-            )
+        self._upsert_many(
+            events_table,
+            ((item.id, self._event_values(run_id, item)) for item in items),
+        )
 
     def save_driver_candidates(self, run_id: str, items: Iterable[DriverCandidate]) -> None:
-        for item in items:
-            self._upsert(
-                driver_candidates_table,
-                item.id,
-                {
-                    "id": item.id,
-                    "run_id": run_id,
-                    "target_event_id": item.target_event_id,
-                    "candidate_event_id": item.candidate_event_id,
-                    "interpretation_claim_id": item.interpretation_claim_id,
-                    "confidence": item.confidence.value,
-                    "payload_json": item.model_dump_json(),
-                },
-            )
+        self._upsert_many(
+            driver_candidates_table,
+            (
+                (
+                    item.id,
+                    {
+                        "id": item.id,
+                        "run_id": run_id,
+                        "target_event_id": item.target_event_id,
+                        "candidate_event_id": item.candidate_event_id,
+                        "interpretation_claim_id": item.interpretation_claim_id,
+                        "confidence": item.confidence.value,
+                        "payload_json": item.model_dump_json(),
+                    },
+                )
+                for item in items
+            ),
+        )
 
     def load_driver_candidates_for_target(self, target_event_id: str) -> list[DriverCandidate]:
         with self.engine.connect() as connection:
@@ -2022,18 +2114,22 @@ class RadarStore:
             )
 
     def save_markets(self, run_id: str, items: Iterable[MarketObservation]) -> None:
-        for item in items:
-            self._upsert(
-                market_table,
-                item.id,
-                {
-                    "id": item.id,
-                    "run_id": run_id,
-                    "symbol": item.symbol,
-                    "observed_at": item.observed_at,
-                    "payload_json": item.model_dump_json(),
-                },
-            )
+        self._upsert_many(
+            market_table,
+            (
+                (
+                    item.id,
+                    {
+                        "id": item.id,
+                        "run_id": run_id,
+                        "symbol": item.symbol,
+                        "observed_at": item.observed_at,
+                        "payload_json": item.model_dump_json(),
+                    },
+                )
+                for item in items
+            ),
+        )
 
     def save_macro(self, run_id: str, items: Iterable[MacroObservation]) -> None:
         for item in items:
@@ -2171,6 +2267,95 @@ class RadarStore:
     def _upsert(self, table: Table, row_id: str, values: dict[str, Any]) -> None:
         with self.engine.begin() as connection:
             self._upsert_connection(connection, table, row_id, values)
+
+    def _upsert_many(
+        self,
+        table: Table,
+        rows: Iterable[tuple[str, dict[str, Any]]],
+    ) -> None:
+        materialized = list(rows)
+        if not materialized:
+            return
+        with self.engine.begin() as connection:
+            self._upsert_many_connection(connection, table, materialized)
+
+    def _upsert_many_connection(
+        self,
+        connection: Connection,
+        table: Table,
+        rows: Iterable[tuple[str, dict[str, Any]]],
+        *,
+        immutable_conflict_columns: tuple[str, ...] = (),
+    ) -> None:
+        by_id: dict[str, dict[str, Any]] = {}
+        for row_id, values in rows:
+            if row_id in by_id and by_id[row_id] != values:
+                raise ValueError(f"Batch contains conflicting duplicate identity: {row_id}")
+            by_id[row_id] = values
+        row_ids = sorted(by_id)
+        dialect = connection.dialect.name
+        if dialect in {"postgresql", "sqlite"}:
+            insert_factory = postgresql_insert if dialect == "postgresql" else sqlite_insert
+            for offset in range(0, len(row_ids), 500):
+                chunk = [by_id[row_id] for row_id in row_ids[offset : offset + 500]]
+                statement = insert_factory(table).values(chunk)
+                upsert_columns = {
+                    key: getattr(statement.excluded, key)
+                    for key in chunk[0]
+                    if key != "id" and key not in immutable_conflict_columns
+                }
+                conflict_guard = (
+                    and_(
+                        *(
+                            table.c[key] == getattr(statement.excluded, key)
+                            for key in immutable_conflict_columns
+                        )
+                    )
+                    if immutable_conflict_columns
+                    else None
+                )
+                result = connection.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=[table.c.id], set_=upsert_columns, where=conflict_guard
+                    )
+                )
+                if immutable_conflict_columns and result.rowcount != len(chunk):
+                    raise ValueError("Story immutable identity cannot be rewritten")
+            return
+        existing_ids: set[str] = set()
+        for offset in range(0, len(row_ids), 500):
+            existing_ids.update(
+                connection.execute(
+                    select(table.c.id).where(table.c.id.in_(row_ids[offset : offset + 500]))
+                ).scalars()
+            )
+
+        update_rows = []
+        insert_rows = []
+        for row_id in row_ids:
+            values = by_id[row_id]
+            if row_id in existing_ids:
+                update_rows.append(
+                    {
+                        "_batch_row_id": row_id,
+                        **{key: value for key, value in values.items() if key != "id"},
+                    }
+                )
+            else:
+                insert_rows.append(values)
+
+        if update_rows:
+            update_columns: dict[str, Any] = {
+                key: bindparam(key) for key in update_rows[0] if key != "_batch_row_id"
+            }
+            connection.execute(
+                table.update()
+                .where(table.c.id == bindparam("_batch_row_id"))
+                .values(**update_columns),
+                update_rows,
+            )
+        if insert_rows:
+            connection.execute(table.insert(), insert_rows)
 
     def _upsert_connection(
         self,

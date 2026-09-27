@@ -240,6 +240,7 @@ def doctor() -> None:
         "radar_view_id": settings.radar_view_id,
         "database_driver": settings.database_url.split(":", 1)[0],
         "report_output_dir": str(settings.resolved_report_output_dir),
+        "pipeline_deadline_seconds": settings.pipeline_deadline_seconds,
         "ai_enabled": settings.ai_enabled,
         "effective_ai_enabled": settings.effective_ai_enabled,
         "daily_llm_budget": settings.daily_llm_budget,

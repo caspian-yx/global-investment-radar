@@ -57,6 +57,7 @@ jobs:
       RUN_MODE: ${{ github.event_name == 'schedule' && 'ai' || inputs.run_mode || 'ai' }}
       BUSINESS_TIMEZONE: Asia/Shanghai
       LOOKBACK_HOURS: "48"
+      PIPELINE_DEADLINE_SECONDS: "1200"
       AI_ENABLED: ${{ github.event_name == 'schedule' && 'true' || (inputs.run_mode == 'no-ai' && 'false' || 'true') }}
       DAILY_LLM_BUDGET: "1"
       AI_MAX_REQUESTS_PER_RUN: "10"

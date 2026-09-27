@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 from typer.testing import CliRunner
 
+from radar import pipeline as pipeline_module
 from radar.briefing import C9_RULE_VERSION, DailyIntelligenceBrief, ExplanationBasis
 from radar.cli import app
 from radar.config import Settings
@@ -28,7 +29,7 @@ from radar.domain import (
 )
 from radar.llm import DisabledLLMProvider, LLMConfigurationError, LLMResponse
 from radar.macro import build_macro_source_document
-from radar.pipeline import _resolve_ai_status, run_daily
+from radar.pipeline import _PipelineStageTimer, _resolve_ai_status, run_daily
 from radar.providers import DemoProvider, make_document
 from radar.report import HtmlReportRenderer
 from radar.storage import (
@@ -53,6 +54,20 @@ class StaticProvider:
     def collect(self, now: datetime) -> CollectionBatch:
         _ = now
         return self.batch
+
+
+def test_pipeline_deadline_is_inside_the_workflow_ceiling(monkeypatch) -> None:
+    settings = Settings(_env_file=None)
+    assert settings.model_dump().get("pipeline_deadline_seconds") == 1200
+
+    monkeypatch.setattr(pipeline_module.time, "perf_counter", lambda: 1200.001)
+    with pytest.raises(RuntimeError, match="deadline"):
+        _PipelineStageTimer(0, deadline_seconds=1200).finish("persistence")
+
+
+def test_delivery_completion_only_logs_elapsed_time(monkeypatch) -> None:
+    monkeypatch.setattr("radar.pipeline.time.perf_counter", lambda: 1201.0)
+    _PipelineStageTimer(0, deadline_seconds=1200).finish("delivery", enforce_deadline=False)
 
 
 def c6_authorized_fed_batch(now: datetime) -> CollectionBatch:
@@ -639,7 +654,7 @@ def test_insufficient_data_generates_diagnostic_report_and_exits_nonzero(
     assert transitions == ["failed"]
 
 
-def test_insufficient_data_uses_diagnostic_email_subject(tmp_path, monkeypatch) -> None:
+def test_insufficient_data_never_becomes_email_eligible(tmp_path, monkeypatch) -> None:
     subjects: list[str] = []
 
     class CapturingSender:
@@ -667,8 +682,7 @@ def test_insufficient_data_uses_diagnostic_email_subject(tmp_path, monkeypatch) 
     with pytest.raises(RuntimeError, match="Insufficient data"):
         run_daily(settings, now=datetime(2026, 9, 7, 9, tzinfo=UTC))
 
-    assert len(subjects) == 1
-    assert "INSUFFICIENT DATA" in subjects[0]
+    assert subjects == []
 
 
 def test_insufficient_data_returns_nonzero_from_cli(tmp_path, monkeypatch) -> None:
@@ -956,6 +970,19 @@ def test_pipeline_routes_linked_macro_event_through_c6_and_unchanged_c2(
         "C6 relationships evaluated=1 allowed=1 rejected=0 "
         "rejected_by_reason={} allowed_by_channel={'MACROECONOMIC_RELEASE': 1}" in caplog.text
     )
+    for stage in (
+        "startup",
+        "collection",
+        "discovery",
+        "evidence_resolution",
+        "market_intelligence",
+        "ai",
+        "persistence",
+        "localization",
+        "rendering",
+        "delivery",
+    ):
+        assert f"Pipeline stage finished stage={stage}" in caplog.text
 
 
 def test_quiet_day_with_zero_events_is_a_valid_report(tmp_path, monkeypatch) -> None:

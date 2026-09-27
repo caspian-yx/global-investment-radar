@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Protocol
 
@@ -8,6 +9,8 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from radar.config import Settings
 from radar.domain import EvidencePack, StructuredAnalysis
+
+logger = logging.getLogger(__name__)
 
 
 class LLMProvider(Protocol):
@@ -186,9 +189,7 @@ class DeepSeekProvider:
                 "DEEPSEEK_API_KEY is required when constructing DeepSeekProvider."
             )
         if model is None or not model.strip():
-            raise LLMConfigurationError(
-                "LLM_MODEL is required when constructing DeepSeekProvider."
-            )
+            raise LLMConfigurationError("LLM_MODEL is required when constructing DeepSeekProvider.")
         if timeout_seconds <= 0:
             raise LLMConfigurationError("LLM_TIMEOUT_SECONDS must be greater than zero.")
         self._api_key = secret
@@ -220,11 +221,15 @@ class DeepSeekProvider:
         if request.max_output_tokens is not None:
             payload["max_tokens"] = request.max_output_tokens
         if request.reasoning is not None:
-            payload["thinking"] = {
-                "type": "enabled" if request.reasoning else "disabled"
-            }
+            payload["thinking"] = {"type": "enabled" if request.reasoning else "disabled"}
 
         started = time.perf_counter()
+        logger.info(
+            "LLM request started provider=%s model=%s timeout_seconds=%.3f retry=0",
+            self.name,
+            self.model,
+            self.timeout_seconds,
+        )
         try:
             with httpx.Client(
                 timeout=self.timeout_seconds,
@@ -239,29 +244,65 @@ class DeepSeekProvider:
                     json=payload,
                 )
         except httpx.ConnectTimeout as exc:
+            self._log_timeout(started, "connect")
             raise LLMTimeoutError(
                 "DeepSeek request timed out during connection.", phase="connect"
             ) from exc
         except httpx.ReadTimeout as exc:
+            self._log_timeout(started, "read")
             raise LLMTimeoutError(
                 "DeepSeek request timed out during response read.", phase="read"
             ) from exc
         except httpx.WriteTimeout as exc:
+            self._log_timeout(started, "write")
             raise LLMTimeoutError(
                 "DeepSeek request timed out during request write.", phase="write"
             ) from exc
         except httpx.PoolTimeout as exc:
+            self._log_timeout(started, "pool")
             raise LLMTimeoutError(
                 "DeepSeek request timed out waiting for a connection.", phase="pool"
             ) from exc
         except httpx.TimeoutException as exc:
+            self._log_timeout(started, "unknown")
             raise LLMTimeoutError("DeepSeek request timed out.") from exc
         except httpx.RequestError as exc:
+            logger.warning(
+                "LLM request finished provider=%s outcome=transport_error "
+                "elapsed_seconds=%.3f retry=0",
+                self.name,
+                time.perf_counter() - started,
+            )
             raise LLMProviderError("DeepSeek request failed before receiving a response.") from exc
 
         latency_seconds = time.perf_counter() - started
-        self._raise_for_status(response)
-        return self._normalize_response(response, latency_seconds)
+        try:
+            self._raise_for_status(response)
+            normalized = self._normalize_response(response, latency_seconds)
+        except LLMError as exc:
+            logger.warning(
+                "LLM request finished provider=%s outcome=provider_error error_type=%s "
+                "elapsed_seconds=%.3f retry=0",
+                self.name,
+                type(exc).__name__,
+                latency_seconds,
+            )
+            raise
+        logger.info(
+            "LLM request finished provider=%s outcome=success elapsed_seconds=%.3f retry=0",
+            self.name,
+            latency_seconds,
+        )
+        return normalized
+
+    def _log_timeout(self, started: float, phase: str) -> None:
+        logger.warning(
+            "LLM request finished provider=%s outcome=timeout phase=%s "
+            "elapsed_seconds=%.3f retry=0",
+            self.name,
+            phase,
+            time.perf_counter() - started,
+        )
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         status = response.status_code
@@ -272,9 +313,7 @@ class DeepSeekProvider:
         if status == 429:
             raise LLMRateLimitError("DeepSeek rate limit was exceeded.")
         if status in {400, 404} and self._response_mentions_model(response):
-            raise LLMInvalidModelError(
-                f"DeepSeek rejected configured model {self.model!r}."
-            )
+            raise LLMInvalidModelError(f"DeepSeek rejected configured model {self.model!r}.")
         raise LLMProviderError(f"DeepSeek request failed with HTTP status {status}.")
 
     @staticmethod

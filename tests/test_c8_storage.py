@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import event
 
 from radar.domain import Event, EventType, MarketObservation
 from radar.impact import (
@@ -128,9 +129,7 @@ def test_migration_005_is_additive_repeatable_and_validated(tmp_path) -> None:
 def test_migration_005_rejects_incomplete_existing_schema_without_marker(tmp_path) -> None:
     store = RadarStore(f"sqlite:///{(tmp_path / 'c8-invalid.db').as_posix()}")
     with store.engine.begin() as connection:
-        connection.exec_driver_sql(
-            "CREATE TABLE c8_market_impacts (id VARCHAR(36) PRIMARY KEY)"
-        )
+        connection.exec_driver_sql("CREATE TABLE c8_market_impacts (id VARCHAR(36) PRIMARY KEY)")
 
     with pytest.raises(RuntimeError, match="C8 migration is incomplete"):
         store.initialize()
@@ -191,7 +190,15 @@ def test_different_targets_windows_rules_and_runs_preserve_history(tmp_path) -> 
         }
     )
 
+    transaction_count = 0
+
+    def count_transaction(_connection) -> None:
+        nonlocal transaction_count
+        transaction_count += 1
+
+    event.listen(store.engine, "begin", count_transaction)
     store.save_market_impacts("run-1", [base, other_target, other_rule, next_window])
+    assert transaction_count == 1
     store.save_market_impacts("run-2", [base])
 
     assert store.table_count(c8_market_impacts_table) == 5
